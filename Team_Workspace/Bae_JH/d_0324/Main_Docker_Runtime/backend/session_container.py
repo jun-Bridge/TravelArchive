@@ -3,9 +3,25 @@
 현재 대화 주제, 개인화 정보, 그리고 과거와 현재의 메시지 버퍼를 관리합니다.
 각각의 LLM 태스크(대화 생성, 주제 추출, 맥락 요약)를 독립된 노드에서 처리하도록 설계되었습니다.
 """
+import sys
+import os
 import asyncio
 import json
+from pathlib import Path
 from typing import List, Dict, Optional
+
+# 실행 경로(sys.path) 문제 방지: backend의 상위 폴더(프로젝트 루트)를 path에 동적으로 추가하여 setting 모듈을 확실히 찾게 합니다.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# 중앙 통제 config에서 모델, API 키, 프롬프트 템플릿 임포트
+from setting.config import (
+    LLM_MODEL_GENERATION, GENERATION_PROMPT, GENERATION_API_KEY,
+    LLM_MODEL_TOPIC, TOPIC_PROMPT, TOPIC_API_KEY,
+    LLM_MODEL_SUMMARY, SUMMARY_PROMPT, SUMMARY_API_KEY
+)
+
 from .test_agent import TestNode
 
 class SessionContainer:
@@ -24,10 +40,11 @@ class SessionContainer:
         # 주기적 업데이트 대신 특정 횟수(1번째와 k번째)에서만 업데이트 (요청 2 반영)
         self.rename_threshold = rename_threshold
 
-        # LLM 처리 노드 분리 할당
-        self.generation_node = TestNode()  
-        self.topic_node = TestNode()       
-        self.summary_node = TestNode()     
+        # LLM 처리 노드 분리 할당 및 config 주입
+        # TestNode가 model_name과 api_key를 받을 수 있도록 파라미터를 넘깁니다.
+        self.generation_node = TestNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)  
+        self.topic_node = TestNode(model_name=LLM_MODEL_TOPIC, api_key=TOPIC_API_KEY)       
+        self.summary_node = TestNode(model_name=LLM_MODEL_SUMMARY, api_key=SUMMARY_API_KEY)    
 
         # 상태 변수 초기화
         self.personalization_topic: str = ""
@@ -197,7 +214,6 @@ class SessionContainer:
         suggested_name = self.session_name
         suggested_topic = self.session_topic
 
-        # 처음에 한 번, 그리고 k개가 쌓였을 때 한 번만 동작하고 그 이후로는 동작하지 않음.
         if user_msg_count == 1 or user_msg_count == self.rename_threshold:
             print(f"[{self.session_id}] 사용자 입력 {user_msg_count}회 누적. 주제 갱신 LLM 가동.")
             
@@ -207,22 +223,16 @@ class SessionContainer:
                 history_text += f"{role_kr}: {msg['content']}\n"
             history_text += f"사용자: {current_msg['content']}"
 
-            prompt = (
-                "너는 대화의 핵심을 파악하여 분류하는 AI야.\n"
-                "아래 대화 내역을 분석해서, 현재 대화의 '구체적인 여행 목적(주제)'과 'UI에 표시할 세션 이름(15자 이내)'을 JSON 형식으로만 응답해.\n"
-                "반드시 {\"topic\": \"...\", \"name\": \"...\"} 형태의 유효한 JSON만 출력해야 해.\n"
-                f"[대화 내역]:\n{history_text}"
-            )
+            # config.py에서 불러온 템플릿에 .format()으로 값을 주입합니다.
+            prompt = TOPIC_PROMPT.format(history_text=history_text)
 
             try:
                 response = await self.topic_node.ask(prompt)
                 response_clean = response.replace("```json", "").replace("```", "").strip()
                 result = json.loads(response_clean)
                 
-                # 내부 시스템 관리를 위한 맥락인 topic은 항상 갱신을 수용
                 suggested_topic = result.get("topic", suggested_topic)
                 
-                # 사용자가 이름을 수동으로 지정한 적이 없을 때만 세션 이름(UI)을 갱신
                 if not self.is_manual_title:
                     suggested_name = result.get("name", suggested_name)
                     print(f"[{self.session_id}] 주제 및 이름 갱신 완료 - 주제: {suggested_topic}, 이름: {suggested_name}")
@@ -246,12 +256,13 @@ class SessionContainer:
         else:
             past_chat_history = "최근 대화 내역 없음"
 
-        prompt = (
-            f"[개인화 정보]: {p_topic}\n"
-            f"[현재 대화 주제]: {s_topic}\n"
-            f"[이전 대화 요약]: {s_context}\n"
-            f"[최근 대화 기록 (버퍼)]:\n{past_chat_history}\n"
-            f"[현재 사용자 메시지]: {current_msg['content']}"
+        # config.py에서 불러온 템플릿에 .format()으로 변수들을 안전하게 주입합니다.
+        prompt = GENERATION_PROMPT.format(
+            p_topic=p_topic,
+            s_topic=s_topic,
+            s_context=s_context,
+            past_chat_history=past_chat_history,
+            current_msg_content=current_msg['content']
         )
         
         response = await self.generation_node.ask(prompt)
@@ -265,12 +276,10 @@ class SessionContainer:
             role_kr = "사용자" if msg["role"] == "user" else "AI"
             history_text += f"{role_kr}: {msg['content']}\n"
 
-        prompt = (
-            "너는 과거의 대화 내역을 핵심만 압축하여 요약하는 AI야.\n"
-            "기존에 요약된 맥락과 새롭게 추가된 대화 내역을 바탕으로, 봇이 앞으로의 대화에서 참고해야 할 핵심 정보를 하나의 문단으로 통합해서 요약해 줘.\n"
-            f"[기존 대화 요약]: {current_context if current_context else '없음'}\n"
-            f"[새로 추가된 대화 내역]:\n{history_text}\n"
-            "새로운 통합 요약문만 출력해."
+        # config.py에서 불러온 템플릿에 .format()으로 변수를 주입합니다.
+        prompt = SUMMARY_PROMPT.format(
+            current_context=current_context if current_context else '없음',
+            history_text=history_text
         )
 
         try:
