@@ -1,0 +1,20 @@
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: TA_nginx
+    ports:
+      - "8080:80"
+    volumes:
+      # 이제 NAS에 존재하는 실제 파일(default.conf)이 정확히 Nginx 안으로 들어갑니다.
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./resource:/usr/share/nginx/resource:ro
+      
+    networks:
+      - TravelArchiveNetwork
+    restart: always
+
+networks:
+  TravelArchiveNetwork:
+    external: true
