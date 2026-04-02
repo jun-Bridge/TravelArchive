@@ -64,7 +64,7 @@
 }
 
 .sidebar-tab {
-  flex: 1;
+  flex: 1; /* Restore responsive width */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -140,43 +140,76 @@
 
 .sidebar-list {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  gap: 12px;
+  margin-right: 0;
+  margin-top: -4px;
+  width: 100%;
   overflow-y: auto;
   padding-right: 0;
 }
 
 /* Calendar Container */
 .calendar-container {
-  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  gap: 12px;
-  margin-right: 0; /* Keep 0 so the list scrollbar matches the session list scrollbar position */
-  margin-top: -4px; /* Raise even higher to match New Chat button top position */
+  gap: 8px;
+  margin-right: 0;
+  margin-top: 8px; /* Lowered from -4px to prevent clipping */
   width: 100%;
 }
 
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 4px;
+}
+
+.section-toggle-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(31, 41, 55, 0.7);
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  margin-bottom: 6px;
+}
+
+.section-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  color: rgba(17, 24, 39, 0.9);
+}
+
+.toggle-icon {
+  transition: transform 0.3s ease;
+}
+
+.collapsed .toggle-icon {
+  transform: rotate(0deg); /* We'll change the icon content in JS or use rotation if we use + */
+}
+
+.section-toggle-btn.collapsed .line-v {
+  display: block !important;
+}
+
+.section-content-collapsed {
+  display: none !important;
+}
+
 .schedule-list-container {
-  flex: 1.2; /* Increase height ratio */
   overflow-y: auto;
   margin-bottom: 20px;
   padding-right: 0;
-}
-
-/* Match session list scrollbar behavior exactly */
-.schedule-list-container::-webkit-scrollbar {
-  width: 6px;
-}
-.schedule-list-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-.schedule-list-container::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0);
-  border-radius: 10px;
-}
-.schedule-list-container:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.4);
+  transition: all 0.3s ease;
 }
 
 .calendar-placeholder {
@@ -185,6 +218,8 @@
   padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   margin-right: 0; /* Margin handled by .sidebar-view */
+  width: 100%; /* Fully responsive width */
+  box-sizing: border-box;
 }
 
 .calendar-grid-mock {
@@ -200,7 +235,7 @@
 
 .mock-days, .mock-body {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, 1fr); /* Responsive 7-column grid */
   gap: 2px;
 }
 

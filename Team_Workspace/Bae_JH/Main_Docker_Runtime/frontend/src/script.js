@@ -10,6 +10,8 @@ import { WeatherManager } from './js/weatherManager.js';
 import { SidebarManager } from './js/sidebar.js';
 import { ChatManager } from './js/chat.js';
 import { SessionManager } from './js/session.js';
+import { CalendarManager } from './js/calendar.js';
+import { ScheduleManager } from './js/schedule.js';
 import { router } from './js/router.js';
 
 import { ThemeManager } from './js/theme.js';
@@ -53,6 +55,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     calendarView: document.getElementById('calendarView'),
     sessionHeaderControls: document.getElementById('sessionHeaderControls'),
     calendarHeaderControls: document.getElementById('calendarHeaderControls'),
+    toggleCalendarBtn: document.getElementById('toggleCalendarBtn'),
+    calendarContent: document.getElementById('calendarContent'),
+    toggleScheduleBtn: document.getElementById('toggleScheduleBtn'),
+    scheduleContent: document.getElementById('scheduleContent'),
     
     // Right Sidebar
     rightSidebar: document.getElementById('rightSidebar'),
@@ -110,8 +116,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initialize Modules
   await SessionManager.init(elements, state);
+  CalendarManager.render(elements.calendarContent);
+  ScheduleManager.render(elements.scheduleContent);
   SidebarManager.initTabs(elements);
   SidebarManager.initResizers(elements, config);
+  SidebarManager.initFolding(elements);
   
   // Initial Routing
   window.addEventListener('hashchange', () => router(state, elements));

@@ -22,13 +22,13 @@
 
 @media (max-width: 1024px) {
   .app-shell {
-    padding: 18px;
+    padding: 10px;
   }
 
   .main-panel {
     border-radius: 24px;
-    height: calc(100vh - 36px);
-    height: calc(100dvh - 36px);
+    height: calc(100vh - 20px);
+    height: calc(100dvh - 20px);
   }
 
   .sidebar {

@@ -63,6 +63,21 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0 10px; /* Internal side padding */
+}
+
+#kakaoMapContainer {
+  width: 100%;
+  aspect-ratio: 1 / 1; /* Make it square */
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  overflow: hidden;
+  position: relative;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  margin-bottom: 24px; /* Space below for better UX */
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .right-sidebar.notransition {

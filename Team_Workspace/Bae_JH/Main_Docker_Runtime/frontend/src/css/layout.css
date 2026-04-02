@@ -98,13 +98,13 @@
   z-index: 10;
   height: 100vh;
   height: 100dvh;
-  padding: 28px;
+  padding: 12px;
 }
 
 .main-panel {
   width: 100%;
-  height: calc(100vh - 56px);
-  height: calc(100dvh - 56px);
+  height: calc(100vh - 24px);
+  height: calc(100dvh - 24px);
   display: flex;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.34);
@@ -244,9 +244,10 @@
   width: 100%;
   max-width: 860px;
   flex: 1;
-  padding: 40px 24px;
+  padding: 12px;
+  margin: 0 auto;
   flex-direction: column;
-  /* align-items: center; removed to allow internal alignment */
+  box-sizing: border-box;
   overflow-y: auto;
   animation: messageFadeIn 0.3s ease-out forwards;
 }

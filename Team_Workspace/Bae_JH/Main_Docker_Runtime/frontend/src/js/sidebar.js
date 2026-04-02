@@ -156,6 +156,29 @@ export const SidebarManager = {
   },
 
   /**
+   * initializes folding for calendar and schedule sections.
+   */
+  initFolding(elements) {
+    const { toggleCalendarBtn, calendarContent, toggleScheduleBtn, scheduleContent } = elements;
+
+    if (toggleCalendarBtn && calendarContent) {
+      toggleCalendarBtn.addEventListener('click', () => {
+        const isCollapsed = calendarContent.classList.toggle('section-content-collapsed');
+        toggleCalendarBtn.classList.toggle('collapsed', isCollapsed);
+        toggleCalendarBtn.title = isCollapsed ? '펴기' : '접기';
+      });
+    }
+
+    if (toggleScheduleBtn && scheduleContent) {
+      toggleScheduleBtn.addEventListener('click', () => {
+        const isCollapsed = scheduleContent.classList.toggle('section-content-collapsed');
+        toggleScheduleBtn.classList.toggle('collapsed', isCollapsed);
+        toggleScheduleBtn.title = isCollapsed ? '펴기' : '접기';
+      });
+    }
+  },
+
+  /**
    * initializes sidebar resizers.
    */
   initResizers(elements, config) {
@@ -204,31 +227,42 @@ export const SidebarManager = {
     }
 
     document.addEventListener('mousemove', (e) => {
+      const minMiddleWidth = Math.max(400, window.innerWidth * 0.3); // Ensure at least 400px or 30% for middle
+
       if (isLeftSidebarDragging) {
         const mouseDelta = e.clientX - lsStartX;
         let newWidth = lsStartWidth + mouseDelta;
 
-        let maxAllowed = window.innerWidth * 0.4;
-        if (window.innerWidth > 1024) {
-          maxAllowed = window.innerWidth / 3;
-        }
+        // Calculate available space for left sidebar
+        const currentRightWidth = rightSidebar.classList.contains('collapsed') ? 0 : rightSidebar.getBoundingClientRect().width;
+        const maxAllowed = window.innerWidth - currentRightWidth - minMiddleWidth;
 
         if (newWidth < 300) newWidth = 300;
         if (newWidth > maxAllowed) newWidth = maxAllowed;
+        
+        // Final safety check to not exceed 45% of total width
+        const absoluteMax = window.innerWidth * 0.45;
+        if (newWidth > absoluteMax) newWidth = absoluteMax;
+
         sidebar.style.width = `${newWidth}px`; 
         config.currentLeftWidth = newWidth;
       }
+      
       if (isRightSidebarDragging) {
         const mouseDelta = rsStartX - e.clientX; 
         let newWidth = rsStartWidth + mouseDelta;
 
-        let maxAllowed = window.innerWidth * 0.6;
-        if (window.innerWidth > 1024) {
-          maxAllowed = window.innerWidth / 3;
-        }
+        // Calculate available space for right sidebar
+        const currentLeftWidth = sidebar.classList.contains('collapsed') ? 0 : sidebar.getBoundingClientRect().width;
+        const maxAllowed = window.innerWidth - currentLeftWidth - minMiddleWidth;
 
         if (newWidth < 300) newWidth = 300;
         if (newWidth > maxAllowed) newWidth = maxAllowed;
+
+        // Final safety check to not exceed 60% of total width (since it's a map)
+        const absoluteMax = window.innerWidth * 0.65;
+        if (newWidth > absoluteMax) newWidth = absoluteMax;
+
         rightSidebar.style.width = `${newWidth}px`; 
         config.currentRightWidth = newWidth; 
       }

@@ -15,3 +15,7 @@ shapely
 unstructured
 PyMuPDF
 aiohttp
+
+redis[hiredis]
+PyJWT
+passlib[bcrypt]
