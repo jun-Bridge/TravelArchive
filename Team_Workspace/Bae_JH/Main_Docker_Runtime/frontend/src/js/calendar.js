@@ -144,6 +144,12 @@ export const CalendarManager = {
         span.onclick = async (e) => {
             e.preventDefault();
             selectedDate = new Date(targetDate);
+            
+            // Smart Jump: If clicking adjacent month day, move the view
+            if (!isCurrentMonth) {
+                currentViewDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+            }
+            
             await this.updateUI();
             if (this.onDateSelect) this.onDateSelect(selectedDate);
         };
@@ -152,10 +158,8 @@ export const CalendarManager = {
         span.oncontextmenu = async (e) => {
             e.preventDefault();
             
-            // If already in a range, and it's the second click or special, we could delete.
-            // But let's stick to the 2-click selection rule.
             if (!rangeSelectionStart) {
-                // Check if we clicked on existing range to delete it
+                // Not in selection mode: Delete or Start
                 const existingRangeIdx = tripRanges.findIndex(r => targetDate >= r.start && targetDate <= r.end);
                 if (existingRangeIdx !== -1) {
                     tripRanges.splice(existingRangeIdx, 1);
@@ -164,13 +168,23 @@ export const CalendarManager = {
                     rangeSelectionStart = new Date(targetDate);
                 }
             } else {
-                // Second click: finalize range
-                const start = new Date(Math.min(rangeSelectionStart, targetDate));
-                const end = new Date(Math.max(rangeSelectionStart, targetDate));
-                tripRanges.push({ start, end });
-                rangeSelectionStart = null;
-                await this.saveRanges();
+                // In selection mode: Cancel or Finish
+                if (isSameDay(targetDate, rangeSelectionStart)) {
+                    rangeSelectionStart = null; // Cancel if same day
+                } else {
+                    const start = new Date(Math.min(rangeSelectionStart, targetDate));
+                    const end = new Date(Math.max(rangeSelectionStart, targetDate));
+                    tripRanges.push({ start, end });
+                    rangeSelectionStart = null;
+                    await this.saveRanges();
+                }
             }
+
+            // Smart Jump for right click too
+            if (!isCurrentMonth) {
+                currentViewDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+            }
+            
             await this.updateUI();
         };
 
