@@ -36,8 +36,11 @@ export function adjustTextareaHeight(chatInput, chatBox) {
   const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
   const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
   const baseHeight = lineHeight + padding + borders;
-  const minHeight = Math.max(32, Math.ceil(baseHeight));
-  const maxHeight = chatBox.classList.contains('expanded') ? 360 : 180;
+
+  // 확장 모드: 최소 136px, 일반 모드: 최소 32px (한 줄)
+  const isExpanded = chatBox.classList.contains('expanded');
+  const minHeight = isExpanded ? Math.max(136, Math.ceil(baseHeight)) : Math.max(32, Math.ceil(baseHeight));
+  const maxHeight = isExpanded ? 360 : 180;
 
   chatInput.style.height = 'auto';
   const nextHeight = Math.min(Math.max(chatInput.scrollHeight, minHeight), maxHeight);

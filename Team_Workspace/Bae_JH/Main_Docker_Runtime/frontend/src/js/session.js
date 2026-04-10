@@ -7,6 +7,11 @@ import { Icons } from './assets.js';
 import { renderTemplate, createElementFromHTML } from './utils.js';
 import { updateSidebarSessionTitle, showToast } from './ui.js';
 
+// 드롭다운 외부 클릭 시 닫기 — 세션 수에 관계없이 단 한 번만 등록
+document.addEventListener('click', () => {
+  document.querySelectorAll('.session-dropdown-menu.show').forEach(m => m.classList.remove('show'));
+});
+
 export const SessionManager = {
   renderSidebarItem(title, sessionId, elements, state, isPrepend = true) {
     const html = renderTemplate('session_item', { title, sessionId }, Icons);
@@ -47,11 +52,6 @@ export const SessionManager = {
         if (menu !== dropdownMenu) menu.classList.remove('show');
       });
       dropdownMenu.classList.toggle('show');
-    });
-
-    // Close menu when clicking outside
-    document.addEventListener('click', () => {
-      dropdownMenu.classList.remove('show');
     });
 
     editBtn.addEventListener('click', (e) => {

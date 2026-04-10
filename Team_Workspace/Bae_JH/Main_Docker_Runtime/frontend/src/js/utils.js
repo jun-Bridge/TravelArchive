@@ -34,3 +34,12 @@ export function debounce(func, wait) {
     timeout = setTimeout(() => func.apply(this, args), wait);
   };
 }
+
+/**
+ * Extracts the current session ID from the URL hash.
+ * Returns 'default' when not inside a chat session route.
+ */
+export function getSessionIdFromHash() {
+  const hashPart = window.location.hash.split('/chat/')[1] || 'default';
+  return hashPart.split('?')[0];
+}

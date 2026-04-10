@@ -359,8 +359,7 @@
   }
 
   .chat-box.expanded textarea {
-    min-height: 104px !important;
-    height: auto !important;
+    /* min-height and height: auto removed — handled by JS for smooth animation */
   }
 
   .theme-popup {

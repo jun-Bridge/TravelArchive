@@ -255,9 +255,7 @@
 }
 
 .chat-box.expanded textarea {
-  min-height: 136px !important;
   max-height: 360px;
-  height: auto !important;
   overflow-y: auto;
 }
 

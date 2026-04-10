@@ -3,8 +3,9 @@
  * Manages the interactive calendar component with original styling.
  */
 
-import { renderTemplate } from './utils.js';
+import { renderTemplate, getSessionIdFromHash } from './utils.js';
 import { BackendHooks } from './api.js';
+import { eventBus, EVENTS } from './core/event-bus.js';
 
 let currentViewDate = new Date(); 
 let selectedDate = new Date(); // Focus date (Left Click)
@@ -34,6 +35,15 @@ export const CalendarManager = {
     if (!container) return;
     this.container = container;
     this.container.innerHTML = renderTemplate('calendar');
+
+    // 버튼 바인딩은 render() 시 한 번만 수행 — updateUI() 매 호출마다 재바인딩하지 않음
+    const prevBtn = document.getElementById('prevMonthBtn');
+    const nextBtn = document.getElementById('nextMonthBtn');
+    const todayBtn = document.getElementById('todayBtn');
+    if (prevBtn) prevBtn.onclick = (e) => { e.stopPropagation(); currentViewDate.setMonth(currentViewDate.getMonth() - 1); this.updateUI(); };
+    if (nextBtn) nextBtn.onclick = (e) => { e.stopPropagation(); currentViewDate.setMonth(currentViewDate.getMonth() + 1); this.updateUI(); };
+    if (todayBtn) todayBtn.onclick = async (e) => { e.stopPropagation(); await this.setSelectedDate(new Date(referenceTodayDate)); };
+
     await this.updateUI(true);
   },
 
@@ -42,6 +52,9 @@ export const CalendarManager = {
     selectedDate.setHours(0, 0, 0, 0);
     currentViewDate = new Date(date);
     await this.updateUI();
+    // Emit event for other modules (memo, schedule managers)
+    eventBus.emit(EVENTS.CALENDAR_DATE_SELECTED, { date: selectedDate, sessionId: getSessionIdFromHash() });
+    // Keep backwards-compatible callback for existing code
     if (this.onDateSelect) this.onDateSelect(selectedDate);
   },
 
@@ -70,7 +83,7 @@ export const CalendarManager = {
   },
 
   async saveRanges() {
-    const sessionId = window.location.hash.split('/chat/')[1] || 'default';
+    const sessionId = getSessionIdFromHash();
     if (sessionId === 'default') return;
     const rangesToSave = tripRanges.map(r => ({
         start: formatDate(r.start),
@@ -82,14 +95,10 @@ export const CalendarManager = {
   async updateUI(forceFullUpdate = false) {
     const titleEl = document.getElementById('calendarTitle');
     const daysContainer = document.getElementById('calendarDays');
-    const prevBtn = document.getElementById('prevMonthBtn');
-    const nextBtn = document.getElementById('nextMonthBtn');
-    const todayBtn = document.getElementById('todayBtn');
 
     if (!titleEl || !daysContainer) {
         if (this.container) {
-            this.container.innerHTML = renderTemplate('calendar');
-            return this.updateUI(true);
+            return this.render(this.container);
         }
         return;
     }
@@ -103,7 +112,7 @@ export const CalendarManager = {
     const lastDateOfMonth = new Date(year, month + 1, 0).getDate();
     const lastDateOfPrevMonth = new Date(year, month, 0).getDate();
 
-    const sessionId = window.location.hash.split('/chat/')[1] || 'default';
+    const sessionId = getSessionIdFromHash();
     const indicators = await BackendHooks.fetchMonthDataIndicators(sessionId, year, month + 1);
     const hasData = (y, m, d) => indicators.includes(`${y}-${m+1}-${d}`);
 
@@ -199,19 +208,5 @@ export const CalendarManager = {
 
     daysContainer.innerHTML = '';
     daysContainer.appendChild(fragment);
-
-    const handleMonth = async (offset) => {
-        currentViewDate.setMonth(currentViewDate.getMonth() + offset);
-        await this.updateUI();
-    };
-    if (prevBtn) prevBtn.onclick = (e) => (e.stopPropagation(), handleMonth(-1));
-    if (nextBtn) nextBtn.onclick = (e) => (e.stopPropagation(), handleMonth(1));
-
-    if (todayBtn) {
-        todayBtn.onclick = async (e) => {
-          e.stopPropagation();
-          await this.setSelectedDate(new Date(referenceTodayDate));
-        };
-    }
   }
 };

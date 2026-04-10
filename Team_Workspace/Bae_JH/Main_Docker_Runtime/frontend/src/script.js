@@ -228,8 +228,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   elements.chatInput.addEventListener('keydown', (e) => (e.key === 'Enter' && !e.shiftKey && !e.isComposing) && (e.preventDefault(), ChatManager.handleSend(state, elements)));
   elements.chatInput.addEventListener('input', () => adjustTextareaHeight(elements.chatInput, elements.chatBox));
   elements.expandBtn.addEventListener('click', () => {
-    elements.chatBox.classList.toggle('expanded');
-    adjustTextareaHeight(elements.chatInput, elements.chatBox);
+    const input = elements.chatInput;
+    const box = elements.chatBox;
+
+    // 1. 현재 높이를 애니메이션 시작점으로 저장
+    const startHeight = input.offsetHeight;
+
+    // 2. 확장/축소 상태 토글
+    box.classList.toggle('expanded');
+    const isExpanded = box.classList.contains('expanded');
+
+    // 3. 컨텐츠 높이 측정 (1px로 압축 후 scrollHeight 읽기)
+    input.style.height = '1px';
+    const contentHeight = input.scrollHeight;
+
+    // 4. 목표 높이 계산 (min/max 범위 내)
+    const minHeight = isExpanded ? 136 : 32;
+    const maxHeight = isExpanded ? 360 : 180;
+    const targetHeight = Math.min(Math.max(contentHeight, minHeight), maxHeight);
+
+    // 5. 애니메이션 시작점으로 복원 (transition 없이)
+    input.style.transition = 'none';
+    input.style.height = startHeight + 'px';
+
+    // 6. reflow 강제 적용 (transition: none이 적용되도록)
+    input.getBoundingClientRect();
+
+    // 7. 다음 프레임에서 목표 높이로 부드럽게 전환
+    requestAnimationFrame(() => {
+      input.style.transition = 'height 0.28s cubic-bezier(0.4, 0, 0.2, 1)';
+      input.style.height = targetHeight + 'px';
+      input.style.overflowY = targetHeight >= maxHeight ? 'auto' : 'hidden';
+    });
+
+    // 8. 애니메이션 완료 후 정리
+    input.addEventListener('transitionend', () => {
+      input.style.transition = '';
+      adjustTextareaHeight(input, box);
+    }, { once: true });
+
     window.updatePlaceholder();
   });
 
