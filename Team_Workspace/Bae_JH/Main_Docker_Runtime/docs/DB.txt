@@ -1,0 +1,194 @@
+[카테고리: 사용자 계정 및 개인화]
+
+테이블: users
+user_id      고유 식별자
+user_type    가입 유형 (자체, 게스트, 카카오, 네이버, 구글)
+status       계정 상태 (활성, 비활성, 정지) 
+created_at   계정 생성 시각
+
+테이블: user_profile
+user_id          users 참조
+email            이메일 주소 (UNIQUE, 로그인 ID로 사용)
+nickname         화면에 표시되는 이름
+birthday         생년월일
+profile_img_url  프로필 이미지 파일 URL
+updated_at       최종 수정 시각
+
+테이블: user_security
+user_id           users 참조
+password_hash     암호화된 비밀번호
+last_login_at     마지막 로그인 시각
+login_fail_count  연속 로그인 실패 횟수
+locked_until      계정 잠금 해제 시각
+
+테이블: user_oauth // SNS 계정 연동시
+id            연동 고유 식별자
+user_id       users 참조
+provider      연동된 OAuth 제공자 (카카오, 네이버, 구글)
+provider_sub  제공자 측 고유 ID
+linked_at     연동 시각
+
+테이블: user_preferences
+user_id              users 참조
+travel_style         여행 성향 (감성, 맛집 중심 등)
+transport_type       선호 이동 수단
+preferred_food       선호 음식 목록
+schedule_density     선호 일정 밀도
+companion_type       주 동행 유형
+personalized_topics  AI가 추출한 개인의 관심사 및 키워드
+ui_settings          화면 테마 등 앱 환경 설정
+updated_at           갱신 시각
+
+테이블: auth_tokens // 이메일 인증 및 비밀번호 재설정 토큰 관리
+token_id    토큰 고유 식별자
+email       대상 이메일 주소
+token_hash  해시 처리된 토큰값 (원본은 이메일로 발송)
+token_type  토큰 용도 (이메일 인증 / 비밀번호 재설정)
+expires_at  토큰 만료 시각
+used_at     토큰 사용 시각 (null이면 미사용)
+created_at  발급 시각
+
+테이블: refresh_tokens // JWT 리프레시 토큰 관리
+token_id    토큰 고유 식별자
+user_id     users 참조
+token_hash  해시 처리된 리프레시 토큰값
+user_agent  접속 기기 및 브라우저 정보
+expires_at  토큰 만료 시각
+revoked_at  토큰 폐기 시각 (null이면 유효)
+created_at  발급 시각
+
+
+
+
+[카테고리: 세션 및 챗봇 커뮤니케이션]
+
+테이블: sessions
+session_id       세션 고유 식별자
+title            세션 표시 이름
+context          AI가 요약한 누적 대화 맥락
+mode             개인 / 팀 구분
+is_manual_title  사용자가 제목을 직접 변경했는지 여부
+created_at       생성 시각
+updated_at       갱신 시각
+
+테이블: session_participants
+session_id  sessions 참조
+user_ids     users 참조
+role        방장 / 참여자
+joined_at   참여 시각
+
+테이블: conversations
+message_id   메시지 고유 식별자
+session_id   sessions 참조
+sender_id    발신자
+sender_role  사용자 / AI / 시스템
+content      대화 텍스트 본문
+created_at   메시지 발생 시각
+
+테이블: session_files
+file_id      파일 고유 식별자
+session_id   sessions 참조
+uploader_id  업로드한 사용자
+message_id  함께 업로드한 메시지
+file_url     저장된 파일 URL
+file_name    원본 파일명
+file_type    파일 포맷
+file_size    파일 크기 (bytes)
+uploaded_at  업로드 시각
+
+
+[카테고리: 장소]
+
+테이블: places
+place_id       장소 고유 식별자
+name           장소명
+place_type     장소 종류 (관광지, 식당, 숙소 등)
+description    상세 설명
+category_id    장소 카테고리
+address_jibun        주소
+address_dororong	도로명
+region         권역 (제주시 등) 동부 서부 중앙 남부 북부 우도 추자도
+latitude       위도
+longitude      경도
+website_url    웹사이트 / 예약 링크 - null
+indoor_outdoor 실내 / 실외
+created_at     등록 시각
+updated_at     수정 시각
+
+테이블: place_categories
+category_id    카테고리 식별자
+category_name  카테고리명 (자연, 박물관 등)
+
+
+테이블: place_hours
+hour_id      운영시간 고유 식별자
+place_id     places 참조
+day_of_week  요일
+open_time    오픈 시간
+close_time   마감 시간
+is_closed    해당 요일 휴무 여부
+
+테이블: place_images
+image_id   이미지 고유 식별자
+place_id   places 참조
+image_url  이미지 URL
+source     이미지 출처
+is_main    대표 이미지 여부
+
+
+[카테고리: 여행 계획]
+
+테이블: trips
+trip_id          여행 계획 고유 식별자
+title            여행 제목
+destination      목적지
+start_date       여행 시작일
+end_date         여행 종료일
+companion_type   동행 유형
+transport_type   주 이동 수단
+status           진행 상태 (계획중, 여행중, 완료)
+created_at       생성 시각
+updated_at       갱신 시각
+
+테이블: trip_participants
+trip_id   trips 참조
+user_id   users 참조
+role      소유자 / 편집자 / 뷰어
+
+테이블: trip_days
+trip_day_id  여행 일자 고유 식별자
+trip_id      trips 참조
+day_number   1일차, 2일차 등 순서
+target_date  실제 날짜
+
+테이블: itinerary_items
+item_id           세부 일정 항목 식별자
+trip_day_id       trip_days 참조
+place_id          방문 장소
+visit_order       당일 방문 순서
+start_time        방문 시작 예정 시간
+end_time          방문 종료 예정 시간
+memo              메모
+transport_from    이전 장소에서의 이동 수단
+travel_time_min   이동 예상 소요 시간 (분)
+
+
+[카테고리: 날씨 정보]
+
+테이블 weather_list
+weather_list_id
+target_date    예보 대상 날짜
+travel_ids		해당 날짜 여행 있는가?
+weather_ids
+
+테이블: weather_snapshots
+weather_id     예보 고유 식별자
+region         권역명
+target_date    예보 대상 날짜
+condition      날씨 상태 (맑음, 비, 흐림 등)
+temp_min       최저 기온
+temp_max       최고 기온
+rain_prob      강수 확률
+precipitation  예상 강수량
+wind_speed     예상 풍속
+fetched_at     데이터 수집 시각

@@ -20,6 +20,8 @@ async def run_node_interaction(target_node, input_data):
     """
     노드에 데이터를 넣고, 결과가 나올 때까지 기다려 데이터를 반환하는 핵심 함수
     """
+    print(f"[run_node_interaction] 시작: node_id={target_node.node_id}, input_data={str(input_data)[:50]}...")
+    
     msg = create_message(
         source="facade_api",
         kind="data",
@@ -28,15 +30,20 @@ async def run_node_interaction(target_node, input_data):
     )
 
     await target_node.iface.from_router_q.put(msg)
+    print(f"[run_node_interaction] 메시지 변송 완료, 응답 대기 중...")
 
     full_response = ""
     is_done = False
+    iteration_count = 0
+    max_iterations = 1000  # 무한 루프 방지
 
-    while not is_done:
+    while not is_done and iteration_count < max_iterations:
+        iteration_count += 1
         await target_node.tick()
 
         while not target_node.iface.to_router_q.empty():
             result_msg = await target_node.iface.to_router_q.get()
+            print(f"[run_node_interaction] 응답 수신: kind={result_msg.kind}, data_type={type(result_msg.data).__name__}")
 
             # 1. StreamChunk 처리
             if type(result_msg.data).__name__ == "StreamChunk":
@@ -44,20 +51,31 @@ async def run_node_interaction(target_node, input_data):
                 full_response += chunk.data
                 if chunk.is_end:
                     is_done = True
+                    print(f"[run_node_interaction] StreamChunk 완료")
             
             # 2. 일반 문자열 처리
             elif isinstance(result_msg.data, str):
                 full_response = result_msg.data
                 is_done = True
+                print(f"[run_node_interaction] 일반 문자열 수신, 완료")
             
             # 3. 에러 처리
             elif result_msg.kind == "error":
                 full_response = f"Error: {result_msg.data}"
                 is_done = True
+                print(f"[run_node_interaction] ❌ 에러 수신: {full_response}")
+
+        if not is_done and iteration_count % 100 == 0:
+            print(f"[run_node_interaction] 아직 대기 중... ({iteration_count}회)")
 
         if not is_done:
             await asyncio.sleep(0.05)
 
+    if iteration_count >= max_iterations:
+        print(f"[run_node_interaction] ❌ 최대 반복 한계 도달 (1000회)")
+        full_response = "ERROR: 응답 타임아웃 (최대 반복 한계 도달)"
+
+    print(f"[run_node_interaction] 완료: {full_response[:50]}...")
     return full_response
 
 class TestNode:

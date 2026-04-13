@@ -125,10 +125,13 @@ class SessionContainer:
 
             user_msg = {"role": "user", "content": text}
             self.current_message = user_msg
+            print(f"[{self.session_id}] 사용자 메시지 등록: {text[:50]}...")
 
+            print(f"[{self.session_id}] _llm_update_topic 호출 시작...")
             topic_update_result = await self._llm_update_topic(
                 self.current_message, self.past_messages
             )
+            print(f"[{self.session_id}] _llm_update_topic 완료: {topic_update_result}")
             
             topic_changed = (self.session_topic != topic_update_result["topic"] or self.session_name != topic_update_result["name"])
             self.session_topic = topic_update_result["topic"]
@@ -138,7 +141,9 @@ class SessionContainer:
                 await self.db.save_session_state(
                     self.session_id, self.session_topic, self.session_name, self.session_context, self.is_manual_title
                 )
+                print(f"[{self.session_id}] 세션 상태 저장 완료")
 
+            print(f"[{self.session_id}] _node_network_generate 호출 시작...")
             bot_response_text = await self._node_network_generate(
                 self.personalization_topic,
                 self.session_topic,
@@ -146,14 +151,23 @@ class SessionContainer:
                 self.past_messages,
                 self.current_message
             )
+            print(f"[{self.session_id}] _node_network_generate 완료: {bot_response_text[:50]}...")
 
             self.past_messages.append(self.current_message)
             bot_msg = {"role": "bot", "content": bot_response_text}
             self.current_message = bot_msg
 
+            print(f"[{self.session_id}] 버퍼 체크 시작...")
             await self._check_and_flush_buffer()
+            print(f"[{self.session_id}] 버퍼 체크 완료")
 
+            print(f"[{self.session_id}] 모든 처리 완료. 응답: {bot_response_text[:50]}...")
             return bot_response_text
+        except Exception as e:
+            print(f"[{self.session_id}] ❌ process_user_input 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         finally:
             self.is_processing = False
 
@@ -225,9 +239,12 @@ class SessionContainer:
 
             # config.py에서 불러온 템플릿에 .format()으로 값을 주입합니다.
             prompt = TOPIC_PROMPT.format(history_text=history_text)
+            print(f"[{self.session_id}] topic_node.ask() 호출 전")
 
             try:
+                print(f"[{self.session_id}] topic_node={self.topic_node}, node_id={self.topic_node.node.node_id}")
                 response = await self.topic_node.ask(prompt)
+                print(f"[{self.session_id}] topic_node.ask() 응답 수신: {response[:100]}...")
                 response_clean = response.replace("```json", "").replace("```", "").strip()
                 result = json.loads(response_clean)
                 
@@ -240,7 +257,9 @@ class SessionContainer:
                     print(f"[{self.session_id}] 주제 갱신 완료 - 주제: {suggested_topic} (이름은 수동 지정되어 무시함)")
                     
             except Exception as e:
-                print(f"[{self.session_id}] 주제 갱신 노드 에러 (기존 값 유지): {e}")
+                print(f"[{self.session_id}] ❌ 주제 갱신 노드 에러 (기존 값 유지): {e}")
+                import traceback
+                traceback.print_exc()
 
         return {
             "topic": suggested_topic,

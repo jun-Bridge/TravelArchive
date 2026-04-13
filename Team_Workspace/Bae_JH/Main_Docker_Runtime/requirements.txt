@@ -18,5 +18,5 @@ aiohttp
 
 redis[hiredis]
 PyJWT
-passlib[bcrypt]
+bcrypt>=4.0.0
 alembic

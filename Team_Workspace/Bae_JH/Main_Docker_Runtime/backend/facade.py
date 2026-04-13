@@ -4,19 +4,18 @@ import random
 import asyncio
 import uuid
 from typing import List, Dict, Optional
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # ==========================================
-# 기본 경로 및 업로드/다운로드 폴더 설정 (요청 3, 4 반영)
+# 기본 경로 및 업로드/다운로드 폴더 설정
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
-# 파일이 저장될 폴더 및 다운로드 기록이 저장될 폴더를 최상단 변수로 뺌
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 
-# 폴더가 없으면 자동 생성
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
@@ -24,14 +23,50 @@ load_dotenv(os.path.join(BASE_DIR, "setting", ".env"))
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from datetime import date
 
 from .test_agent import TestNode
 from .session_container import SessionContainer
+from module.node.memory.postgres_manager import PostgresManager
+from module.node.memory.redis_manager import RedisManager
+from .auth import auth_service
+from .auth.dependencies import get_current_user, get_current_member, get_optional_user
 
-app = FastAPI(title="Chatbot Middle-end API")
+
+# ==========================================
+# 전역 상태 관리 (DB 매니저 초기화)
+# ==========================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 앱 시작 시 DB 연결 초기화
+    postgres = PostgresManager()
+    redis = RedisManager()
+
+    # postgres_tables의 모델 등록
+    from module.node.memory.postgres_tables import (
+        User, UserProfile, UserSecurity, UserOAuth, UserPreference, Base
+    )
+    postgres.register_model("User", User)
+    postgres.register_model("UserProfile", UserProfile)
+    postgres.register_model("UserSecurity", UserSecurity)
+    postgres.register_model("UserOAuth", UserOAuth)
+    postgres.register_model("UserPreference", UserPreference)
+
+    # 데이터베이스 테이블 생성
+    postgres.create_tables(Base.metadata)
+
+    app.state.postgres = postgres
+    app.state.redis = redis
+    print("[Backend] PostgreSQL & Redis 매니저 초기화 완료")
+    yield
+    # 앱 종료 시 정리
+    print("[Backend] 앱 종료 중...")
+
+
+app = FastAPI(title="TravelArchive API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,14 +77,34 @@ app.add_middleware(
 )
 
 # ==========================================
-# 전역 상태 관리 (인메모리 세션 컨테이너)
+# 세션 메모리 관리 (인메모리)
 # ==========================================
 active_sessions: Dict[str, SessionContainer] = {}
 current_active_session_id: Optional[str] = None
 
+mock_trip_ranges: Dict[str, List[Dict]] = {}
+mock_memos: Dict[str, Dict[str, str]] = {}
+mock_plans: Dict[str, Dict[str, List]] = {}
+mock_map_markers: Dict[str, Dict[str, Dict]] = {}
+
 # ==========================================
-# Pydantic 데이터 모델
+# Pydantic 요청 모델
 # ==========================================
+class SignUpRequest(BaseModel):
+    email: str
+    password: str
+    nickname: str = ""
+
+class LoginRequest(BaseModel):
+    id: str  # 이메일
+    pw: str  # 비밀번호
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
 class SessionCreateRequest(BaseModel):
     first_message: str
     mode: str = "personal"
@@ -62,15 +117,6 @@ class ThemeRequest(BaseModel):
 
 class TitleUpdateRequest(BaseModel):
     title: str
-
-class LoginRequest(BaseModel):
-    id: str
-    pw: str
-
-class SignUpRequest(BaseModel):
-    username: str
-    email: str
-    password: str
 
 class SessionModeUpdateRequest(BaseModel):
     mode: str
@@ -97,42 +143,65 @@ class TripRangeRequest(BaseModel):
     ranges: List[Dict]
 
 # ==========================================
-# Mock DB Storage
-# ==========================================
-mock_trip_ranges: Dict[str, List[Dict]] = {} # {session_id: [{"start": "...", "end": "..."}]}
-mock_memos: Dict[str, Dict[str, str]] = {} # {session_id: {date_key: content}}
-mock_plans: Dict[str, Dict[str, List]] = {} # {session_id: {date_key: [plan_items]}}
-mock_map_markers: Dict[str, Dict[str, Dict]] = {} # {session_id: {marker_id: {marker_id, lat, lng, title}}}
-
-# ==========================================
-# API 라우터
+# 인증 API 라우터
 # ==========================================
 
-# --- 인증 API (Auth) ---
+@app.post("/api/auth/signup")
+async def signup(req: SignUpRequest, request: Request):
+    """자체 계정 회원가입"""
+    postgres = request.app.state.postgres
+    result = await auth_service.signup(postgres, {
+        "email": req.email,
+        "password": req.password,
+        "nickname": req.nickname,
+    })
+    return result
+
 @app.post("/api/auth/login")
-async def login(req: LoginRequest):
-    return {"status": "success", "user": {"id": req.id, "name": "Test User"}}
+async def login(req: LoginRequest, request: Request):
+    """자체 계정 로그인"""
+    postgres = request.app.state.postgres
+    redis = request.app.state.redis
+    result = await auth_service.login(postgres, redis, req.id, req.pw)
+    return result
 
 @app.post("/api/auth/guest")
-async def guest_login():
-    return {"status": "success", "user": {"id": "guest", "name": "Guest"}}
+async def guest_login(request: Request):
+    """게스트 로그인"""
+    redis = request.app.state.redis
+    result = await auth_service.guest_login(redis)
+    return result
+
+@app.post("/api/auth/refresh")
+async def refresh(req: RefreshRequest, request: Request):
+    """토큰 갱신"""
+    redis = request.app.state.redis
+    result = await auth_service.refresh_token_service(redis, req.refresh_token)
+    return result
+
+@app.post("/api/auth/logout")
+async def logout(req: LogoutRequest, request: Request):
+    """로그아웃"""
+    redis = request.app.state.redis
+    await auth_service.logout(redis, req.refresh_token)
+    return {"status": "success", "message": "로그아웃 되었습니다"}
 
 @app.post("/api/auth/social/{provider}")
 async def social_login(provider: str):
-    return {"status": "success", "redirect": f"/auth/{provider}"}
-
-@app.post("/api/auth/signup")
-async def signup(req: SignUpRequest):
-    return {"status": "success", "message": "Sign up completed"}
+    """SNS 로그인 (구현 예정)"""
+    return {"status": "not_implemented", "provider": provider, "message": "Phase 7에서 구현 예정"}
 
 @app.post("/api/auth/find")
 async def find_account():
-    return {"status": "success", "message": "Find account link sent"}
+    """계정 찾기 (구현 예정)"""
+    return {"status": "not_implemented", "message": "구현 예정"}
 
-# --- 컨텍스트 및 설정 ---
+# ==========================================
+# 컨텍스트 및 설정 API
+# ==========================================
+
 @app.get("/api/context")
 async def get_app_context():
-    from datetime import date
     return {
         "today": date.today().isoformat(),
         "settings": {
@@ -144,58 +213,301 @@ async def get_app_context():
     }
 
 @app.post("/api/settings/update")
-async def update_settings(settings: Dict[str, str]):
-    print(f"[Backend] 설정 업데이트 수신: {settings}")
+async def update_settings(settings: Dict[str, str], request: Request):
+    user_id: str = Depends(get_optional_user)
+    print(f"[Backend] {user_id}의 설정 업데이트: {settings}")
     return {"status": "success"}
 
-# --- 세션 관리 ---
+@app.get("/api/settings")
+async def get_settings(user_id: str = Depends(get_optional_user)):
+    return {"status": "success", "data": "설정 페이지입니다."}
+
+@app.get("/api/auth/me")
+async def get_my_info(request: Request, user_id: str = Depends(get_current_user)):
+    """현재 로그인된 사용자 정보 조회 (인증 필수)"""
+    user_type = user_id.split(":")[0]
+
+    if user_type == "GST":
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "user_type": "GST",
+            "nickname": "게스트",
+            "email": None
+        }
+
+    postgres = request.app.state.postgres
+    result = await postgres.execute({
+        "action": "read",
+        "model": "UserProfile",
+        "filters": {"user_id": user_id}
+    })
+
+    if result.get("status") == "success" and result.get("data"):
+        profile = result["data"][0]
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "user_type": user_type,
+            "nickname": profile.get("nickname", ""),
+            "email": profile.get("email", "")
+        }
+
+    raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다")
+
+@app.get("/api/account")
+async def get_account_info(request: Request, user_id: str = Depends(get_optional_user)):
+    """계정 정보 조회 (인증 선택적)"""
+    if not user_id:
+        return {"status": "guest", "user_id": None, "user_type": None}
+
+    user_type = user_id.split(":")[0]
+
+    if user_type == "GST":
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "user_type": "GST",
+            "nickname": "게스트",
+            "email": None
+        }
+
+    postgres = request.app.state.postgres
+    result = await postgres.execute({
+        "action": "read",
+        "model": "UserProfile",
+        "filters": {"user_id": user_id}
+    })
+
+    if result.get("status") == "success" and result.get("data"):
+        profile = result["data"][0]
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "user_type": user_type,
+            "nickname": profile.get("nickname", ""),
+            "email": profile.get("email", "")
+        }
+
+    return {"status": "success", "user_id": user_id, "user_type": user_type}
+
+@app.get("/api/help")
+async def get_help_data():
+    return {"status": "success", "data": "도움말 가이드라인 페이지입니다."}
+
+@app.post("/api/theme")
+async def save_theme_preference(req: ThemeRequest, user_id: str = Depends(get_optional_user)):
+    print(f"[Backend] {user_id}의 테마 저장: {req.theme}")
+    return {"status": "success"}
+
+@app.get("/api/weather")
+async def get_weather():
+    weather_types = ['clear', 'cloudy', 'rain', 'night']
+    selected_weather = random.choice(weather_types)
+    return {
+        "type": selected_weather,
+        "params": {
+            "intensity": round(random.uniform(0.2, 1.5), 2),
+            "windDirection": round(random.uniform(-1.0, 1.0), 2),
+            "cloudDensity": random.randint(3, 10),
+            "starDensity": random.randint(100, 300)
+        }
+    }
+
+# ==========================================
+# 세션 관리 API (Mock 유지, 나중에 DB로 전환)
+# ==========================================
+
 @app.get("/api/sessions")
-async def get_session_list(mode: str = "personal"):
-    """과거 세션 목록 데이터를 요청합니다. (mode 파라미터 지원)"""
-    return await mock_db_get_session_list()
+async def get_session_list(
+    mode: str = "personal",
+    user_id: str = Depends(get_current_user)
+):
+    """세션 목록 조회 (인증 필수)"""
+    # TODO: 실제 DB 조회로 전환 필요
+    return {"sessions": [], "mode": mode, "user_id": user_id}
 
 @app.post("/api/sessions")
-async def create_session(req: SessionCreateRequest):
-    """새 세션 생성 요청을 처리합니다. (mode 지원)"""
+async def create_session(
+    req: SessionCreateRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user)
+):
+    """새 세션 생성"""
     global current_active_session_id
-    
-    if current_active_session_id and current_active_session_id in active_sessions:
-        await active_sessions[current_active_session_id].teardown()
-        del active_sessions[current_active_session_id]
-        
-    new_session_data = await mock_db_create_session(req.first_message)
-    new_id = new_session_data["id"]
-    
+
+    session_id = "session_" + str(uuid.uuid4())[:8]
+    title = req.first_message[:20] + "..." if len(req.first_message) > 20 else req.first_message
+
     new_container = SessionContainer(
-        session_id=new_id, 
-        user_id="default_user", 
+        session_id=session_id,
+        user_id=user_id,
         db_interface=MockDBInterface()
     )
     await new_container.initialize_session(is_new=True)
-    
-    active_sessions[new_id] = new_container
-    current_active_session_id = new_id
-    
-    return new_session_data
+
+    active_sessions[session_id] = new_container
+    current_active_session_id = session_id
+
+    return {
+        "id": session_id,
+        "title": title,
+        "mode": req.mode,
+        "user_id": user_id,
+        "created_at": date.today().isoformat()
+    }
 
 @app.put("/api/sessions/{session_id}/mode")
-async def update_session_mode(session_id: str, req: SessionModeUpdateRequest):
-    print(f"[Backend] 세션 {session_id} 모드 변경: {req.mode}")
+async def update_session_mode(
+    session_id: str,
+    req: SessionModeUpdateRequest,
+    user_id: str = Depends(get_current_user)
+):
+    print(f"[Backend] {user_id}: 세션 {session_id} 모드 변경: {req.mode}")
     return {"success": True, "mode": req.mode}
 
 @app.post("/api/sessions/{session_id}/invite")
-async def invite_user(session_id: str, req: InviteRequest):
-    print(f"[Backend] 세션 {session_id} 유저 초대: {req.user}")
+async def invite_user(
+    session_id: str,
+    req: InviteRequest,
+    user_id: str = Depends(get_current_user)
+):
+    print(f"[Backend] {user_id}: 세션 {session_id} 유저 초대: {req.user}")
     return {"success": True, "user": req.user}
 
 @app.post("/api/sessions/{session_id}/share")
-async def share_chat(session_id: str):
+async def share_chat(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
     return {"success": True, "share_url": f"http://localhost/share/{session_id}"}
 
-# --- 지도 및 캘린더/플래너 ---
+@app.put("/api/sessions/{session_id}/title")
+async def update_session_title(
+    session_id: str,
+    req: TitleUpdateRequest,
+    user_id: str = Depends(get_current_user)
+):
+    print(f"[Backend] {user_id}: 세션 {session_id} 제목 변경: {req.title}")
+    return {"success": True, "title": req.title}
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """세션 삭제"""
+    global current_active_session_id
+
+    if session_id in active_sessions:
+        del active_sessions[session_id]
+        if current_active_session_id == session_id:
+            current_active_session_id = None
+
+    print(f"[Backend] {user_id}: 세션 {session_id} 삭제")
+    return {"success": True, "message": f"세션 {session_id} 삭제 완료"}
+
+# ==========================================
+# 메시지 API
+# ==========================================
+
+@app.get("/api/sessions/{session_id}/history")
+async def get_chat_history(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """채팅 기록 조회"""
+    if session_id in active_sessions:
+        history = await active_sessions[session_id].get_full_history()
+        return history
+    return {"messages": []}
+
+@app.post("/api/sessions/{session_id}/message")
+async def send_message(
+    session_id: str,
+    req: MessageRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user)
+):
+    """메시지 전송 (스트리밍)"""
+    global current_active_session_id
+
+    if current_active_session_id != session_id:
+        if current_active_session_id and current_active_session_id in active_sessions:
+            await active_sessions[current_active_session_id].teardown()
+            del active_sessions[current_active_session_id]
+
+        if session_id not in active_sessions:
+            new_container = SessionContainer(
+                session_id=session_id,
+                user_id=user_id,
+                db_interface=MockDBInterface()
+            )
+            await new_container.initialize_session(is_new=False)
+            active_sessions[session_id] = new_container
+
+        current_active_session_id = session_id
+
+    container = active_sessions[session_id]
+
+    async def response_generator():
+        response_text = await container.process_user_input(req.message)
+        for char in response_text:
+            yield char
+            await asyncio.sleep(0.03)
+
+    return StreamingResponse(response_generator(), media_type="text/plain")
+
+@app.get("/api/sessions/{session_id}/download")
+async def download_chat(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """채팅 다운로드"""
+    if session_id in active_sessions:
+        history = await active_sessions[session_id].get_full_history()
+    else:
+        history = []
+
+    content = f"--- 대화 기록 ({session_id}) ---\n"
+    for msg in history:
+        role = "사용자" if msg.get("role") == "user" else "봇"
+        content += f"[{role}]\n{msg.get('content', '')}\n\n"
+
+    headers = {"Content-Disposition": f"attachment; filename=chat_{session_id}.txt"}
+    return PlainTextResponse(content, headers=headers)
+
+# ==========================================
+# 파일 업로드 API
+# ==========================================
+
+@app.post("/api/sessions/{session_id}/files")
+async def upload_files(
+    session_id: str,
+    files: List[UploadFile] = File(...),
+    user_id: str = Depends(get_current_user)
+):
+    """파일 업로드"""
+    file_names = []
+    for file in files:
+        file_location = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_location, "wb+") as file_object:
+            file_object.write(await file.read())
+        file_names.append(file.filename)
+
+    print(f"[Backend] {user_id}: 세션 {session_id} 파일 업로드: {file_names}")
+    return {"success": True, "uploaded_files": file_names}
+
+# ==========================================
+# 지도 API
+# ==========================================
+
 @app.post("/api/sessions/{session_id}/map/markers/add")
-async def add_map_marker(session_id: str, req: MapMarkerAddRequest):
-    """프론트엔드 클릭 또는 백엔드 로직으로 마커 단건 추가"""
+async def add_map_marker(
+    session_id: str,
+    req: MapMarkerAddRequest,
+    user_id: str = Depends(get_current_user)
+):
     if session_id not in mock_map_markers:
         mock_map_markers[session_id] = {}
     mock_map_markers[session_id][req.marker_id] = {
@@ -204,22 +516,28 @@ async def add_map_marker(session_id: str, req: MapMarkerAddRequest):
         "lng": req.lng,
         "title": req.title or ""
     }
-    print(f"[Backend] 마커 추가: session={session_id}, id={req.marker_id}, ({req.lat}, {req.lng})")
+    print(f"[Backend] {user_id}: 마커 추가 - {req.marker_id}")
     return {"success": True, "marker_id": req.marker_id}
 
 @app.delete("/api/sessions/{session_id}/map/markers/{marker_id}")
-async def delete_map_marker(session_id: str, marker_id: str):
-    """마커 단건 삭제 (우클릭 제거 또는 백엔드 요청)"""
+async def delete_map_marker(
+    session_id: str,
+    marker_id: str,
+    user_id: str = Depends(get_current_user)
+):
     removed = False
     if session_id in mock_map_markers and marker_id in mock_map_markers[session_id]:
         del mock_map_markers[session_id][marker_id]
         removed = True
-    print(f"[Backend] 마커 삭제: session={session_id}, id={marker_id}, removed={removed}")
+    print(f"[Backend] {user_id}: 마커 삭제 - {marker_id}")
     return {"success": True, "removed": removed}
 
 @app.post("/api/sessions/{session_id}/map/markers")
-async def save_map_markers(session_id: str, req: MapMarkersRequest):
-    """마커 목록 일괄 저장 (bulk upsert)"""
+async def save_map_markers(
+    session_id: str,
+    req: MapMarkersRequest,
+    user_id: str = Depends(get_current_user)
+):
     if session_id not in mock_map_markers:
         mock_map_markers[session_id] = {}
     for m in req.markers:
@@ -234,239 +552,91 @@ async def save_map_markers(session_id: str, req: MapMarkersRequest):
     return {"success": True}
 
 @app.get("/api/sessions/{session_id}/map/markers")
-async def get_map_markers(session_id: str):
-    """현재 세션의 모든 마커 조회 (백엔드→지도 push 기준)"""
+async def get_map_markers(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
     markers = list(mock_map_markers.get(session_id, {}).values())
     return {"markers": markers}
 
+# ==========================================
+# 여행 일정 API
+# ==========================================
+
 @app.put("/api/sessions/{session_id}/trip_range")
-async def save_trip_range(session_id: str, req: TripRangeRequest):
+async def save_trip_range(
+    session_id: str,
+    req: TripRangeRequest,
+    user_id: str = Depends(get_current_user)
+):
     mock_trip_ranges[session_id] = req.ranges
     return {"success": True}
 
 @app.get("/api/sessions/{session_id}/trip_range")
-async def get_trip_range(session_id: str):
+async def get_trip_range(
+    session_id: str,
+    user_id: str = Depends(get_current_user)
+):
     return {"ranges": mock_trip_ranges.get(session_id, [])}
 
+# ==========================================
+# 메모 및 플래너 API
+# ==========================================
+
 @app.put("/api/sessions/{session_id}/memo")
-async def save_memo(session_id: str, date: str, req: MemoRequest):
+async def save_memo(
+    session_id: str,
+    date: str,
+    req: MemoRequest,
+    user_id: str = Depends(get_current_user)
+):
     if session_id not in mock_memos:
         mock_memos[session_id] = {}
     mock_memos[session_id][date] = req.memo
     return {"success": True}
 
 @app.get("/api/sessions/{session_id}/memo")
-async def get_memo(session_id: str, date: str):
+async def get_memo(
+    session_id: str,
+    date: str,
+    user_id: str = Depends(get_current_user)
+):
     memo = mock_memos.get(session_id, {}).get(date, "")
     return {"memo": memo}
 
 @app.put("/api/sessions/{session_id}/plan")
-async def save_plan(session_id: str, date: str, req: PlanRequest):
+async def save_plan(
+    session_id: str,
+    date: str,
+    req: PlanRequest,
+    user_id: str = Depends(get_current_user)
+):
     if session_id not in mock_plans:
         mock_plans[session_id] = {}
     mock_plans[session_id][date] = req.plan
     return {"success": True}
 
 @app.get("/api/sessions/{session_id}/plan")
-async def get_plan(session_id: str, date: str):
+async def get_plan(
+    session_id: str,
+    date: str,
+    user_id: str = Depends(get_current_user)
+):
     plan = mock_plans.get(session_id, {}).get(date, [])
     return {"plan": plan}
 
 @app.get("/api/sessions/{session_id}/indicators")
-async def get_indicators(session_id: str, year: int, month: int):
-    # 합산된 데이터가 존재하는 날짜 목록 추출
+async def get_indicators(
+    session_id: str,
+    year: int,
+    month: int,
+    user_id: str = Depends(get_current_user)
+):
     memo_dates = mock_memos.get(session_id, {}).keys()
     plan_dates = mock_plans.get(session_id, {}).keys()
-    
     unique_dates = list(set(list(memo_dates) + list(plan_dates)))
-    # 해당 년/월에 필터링된 결과만 반환
-    prefix = f"{year}-{month}-"
+    prefix = f"{year}-{month:02d}-"
     return [d for d in unique_dates if d.startswith(prefix)]
-
-@app.get("/api/sessions/{session_id}/history")
-async def get_chat_history(session_id: str):
-    """지정된 세션의 과거 대화 내역을 조회합니다."""
-    if session_id in active_sessions:
-        return await active_sessions[session_id].get_full_history()
-    
-    return await mock_db_get_chat_history(session_id)
-
-@app.post("/api/sessions/{session_id}/message")
-async def send_message(session_id: str, req: MessageRequest):
-    """메시지를 수신하고 컨테이너 파이프라인을 거쳐 결과를 스트리밍합니다."""
-    global current_active_session_id
-    
-    if current_active_session_id != session_id:
-        if current_active_session_id and current_active_session_id in active_sessions:
-            await active_sessions[current_active_session_id].teardown()
-            del active_sessions[current_active_session_id]
-            
-        if session_id not in active_sessions:
-            new_container = SessionContainer(
-                session_id=session_id, 
-                user_id="default_user", 
-                db_interface=MockDBInterface()
-            )
-            await new_container.initialize_session(is_new=False)
-            active_sessions[session_id] = new_container
-            
-        current_active_session_id = session_id
-        
-    container = active_sessions[session_id]
-
-    async def response_generator():
-        response_text = await container.process_user_input(req.message)
-        for char in response_text:
-            yield char
-            await asyncio.sleep(0.03)
-
-    return StreamingResponse(response_generator(), media_type="text/plain")
-
-@app.get("/api/settings")
-async def get_settings():
-    return {"status": "success", "data": "설정 페이지입니다. (FastAPI 연동 완료)"}
-
-@app.get("/api/account")
-async def get_account_info():
-    return {"status": "success", "data": "계정 관리 페이지입니다. (FastAPI 연동 완료)"}
-
-@app.get("/api/help")
-async def get_help_data():
-    return {"status": "success", "data": "도움말 가이드라인 페이지입니다. (FastAPI 제공)"}
-
-@app.post("/api/theme")
-async def save_theme_preference(req: ThemeRequest):
-    print(f"[Backend] 사용자 테마 취향 저장됨: {req.theme}")
-    return {"status": "success"}
-
-@app.get("/api/weather")
-async def get_weather():
-    weather_types = ['clear', 'cloudy', 'rain', 'night']
-    selected_weather = random.choice(weather_types)
-    
-    return {
-        "type": selected_weather,
-        "params": {
-            "intensity": round(random.uniform(0.2, 1.5), 2),
-            "windDirection": round(random.uniform(-1.0, 1.0), 2),
-            "cloudDensity": random.randint(3, 10),
-            "starDensity": random.randint(100, 300)
-        }
-    }
-
-# ==========================================
-# 신규 프론트엔드 연동 API (이름 변경, 다운로드, 파일업로드)
-# ==========================================
-
-@app.put("/api/sessions/{session_id}/title")
-async def update_session_title(session_id: str, req: TitleUpdateRequest):
-    """세션 이름 변경 API (요청 1 반영: 수동 변경 플래그 활성화)"""
-    print(f"[Backend] 세션 {session_id} 수동 이름 변경: {req.title}")
-    
-    for s in mock_sessions_db:
-        if s["id"] == session_id:
-            s["title"] = req.title
-            break
-            
-    if session_id in mock_session_meta_db:
-        mock_session_meta_db[session_id]["name"] = req.title
-        # 수동 변경 플래그 True로 갱신
-        mock_session_meta_db[session_id]["is_manual_title"] = True
-        
-    # 현재 활성화된 세션 컨테이너가 있다면 내부 상태도 즉시 동기화
-    if session_id in active_sessions:
-        active_sessions[session_id].session_name = req.title
-        active_sessions[session_id].is_manual_title = True
-        
-    return {"success": True, "title": req.title}
-
-@app.get("/api/sessions/{session_id}/download")
-async def download_chat(session_id: str):
-    """채팅 내용 다운로드 API (요청 4 반영: 주제와 대화 전체를 txt로)"""
-    print(f"[Backend] 세션 {session_id} 다운로드 요청")
-    
-    topic = "주제 없음"
-    history = []
-    
-    if session_id in active_sessions:
-        history = await active_sessions[session_id].get_full_history()
-        topic = active_sessions[session_id].session_topic
-    else:
-        history = await mock_db_get_chat_history(session_id)
-        meta = mock_session_meta_db.get(session_id, {})
-        topic = meta.get("topic", "주제 없음")
-        
-    # 다운로드할 텍스트 파일 포맷팅 구성
-    content = f"--- 대화 기록 ({session_id}) ---\n"
-    content += f"세션 주제: {topic}\n\n"
-    for msg in history:
-        role = "사용자" if msg["role"] == "user" else "봇"
-        content += f"[{role}]\n{msg['content']}\n\n"
-        
-    # 지정한 EXPORT_DIR 폴더에 파일 저장 복사본 생성 (선택적)
-    export_file_path = os.path.join(EXPORT_DIR, f"chat_{session_id}.txt")
-    with open(export_file_path, "w", encoding="utf-8") as f:
-        f.write(content)
-        
-    headers = {
-        "Content-Disposition": f"attachment; filename=chat_{session_id}.txt"
-    }
-    return PlainTextResponse(content, headers=headers)
-
-@app.post("/api/sessions/{session_id}/files")
-async def upload_files(session_id: str, files: List[UploadFile] = File(...)):
-    """파일 업로드 API"""
-    file_names = []
-    for file in files:
-        # 실제 서버의 UPLOAD_DIR 폴더에 파일 저장
-        file_location = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_location, "wb+") as file_object:
-            file_object.write(await file.read())
-        file_names.append(file.filename)
-        
-    print(f"[Backend] 세션 {session_id} 파일 업로드 수신 및 저장 완료:", file_names)
-    
-    upload_msg = f"파일 첨부 완료: {', '.join(file_names)}"
-    
-    if session_id in active_sessions:
-        # 수정된 부분: db_interface -> db
-        await active_sessions[session_id].db.append_messages(
-            session_id, [{"role": "user", "content": f"[파일업로드] {upload_msg}"}]
-        )
-    else:
-        if session_id not in mock_chat_history_db:
-            mock_chat_history_db[session_id] = []
-        mock_chat_history_db[session_id].append({"role": "user", "content": f"[파일업로드] {upload_msg}"})
-        
-    return {"success": True, "uploaded_files": file_names}
-
-@app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
-    """대화 세션 삭제 API (Mock DB 및 메모리에서 완전 삭제)"""
-    global current_active_session_id
-    print(f"[Backend] 세션 {session_id} 삭제 요청 수신")
-    
-    # 1. 활성화된 세션이 있다면 메모리에서 즉시 해제 (DB 덮어쓰기 방지를 위해 teardown 생략)
-    if session_id in active_sessions:
-        del active_sessions[session_id]
-        # 삭제된 세션이 현재 화면에 띄워져 있던 세션이라면 활성 포인터 초기화
-        if current_active_session_id == session_id:
-            current_active_session_id = None
-
-    # 2. 사이드바 목록 DB에서 제거
-    global mock_sessions_db
-    mock_sessions_db = [s for s in mock_sessions_db if s["id"] != session_id]
-
-    # 3. 대화 내역 DB에서 제거
-    if session_id in mock_chat_history_db:
-        del mock_chat_history_db[session_id]
-
-    # 4. 세션 메타데이터 DB에서 제거
-    if session_id in mock_session_meta_db:
-        del mock_session_meta_db[session_id]
-
-    return {"success": True, "message": f"세션 {session_id} 삭제 완료"}
-
 
 # ==========================================
 # Static Files & 뷰 라우터
@@ -482,44 +652,9 @@ async def read_index():
 app.mount("/resource", StaticFiles(directory=RESOURCE_DIR), name="resource")
 app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
-
 # ==========================================
-# Mock DB Storage & Interface (데이터베이스 목업)
+# Mock DB Interface (세션용, 향후 DB 전환)
 # ==========================================
-
-mock_sessions_db = [
-    {"id": "session_1", "title": "오사카 3박 4일 일정"},
-    {"id": "session_2", "title": "제주도 여행 코스"}
-]
-
-mock_chat_history_db: Dict[str, List[Dict[str, str]]] = {
-    "session_1": [{"role": "user", "content": "오사카 일정 짜줘"}, {"role": "bot", "content": "네, 오사카 3박 4일 일정을 안내해 드릴게요."}],
-    "session_2": [{"role": "user", "content": "제주도 여행 코스 추천해줘"}, {"role": "bot", "content": "제주도 여행 코스를 추천해 드립니다."}]
-}
-
-# DB 메타데이터에 수동 변경 플래그(is_manual_title) 필드 추가
-mock_session_meta_db: Dict[str, Dict[str, any]] = {
-    "session_1": {"topic": "오사카 여행", "name": "오사카 3박 4일 일정", "context": "", "is_manual_title": False},
-    "session_2": {"topic": "제주도 여행", "name": "제주도 여행 코스", "context": "", "is_manual_title": False}
-}
-
-async def mock_db_get_session_list() -> List[dict]:
-    return mock_sessions_db
-
-async def mock_db_create_session(first_message: str) -> dict:
-    new_id = f"session_{uuid.uuid4().hex[:9]}"
-    title = first_message[:20] + "..." if len(first_message) > 20 else first_message
-    
-    new_session = {"id": new_id, "title": title}
-    mock_sessions_db.insert(0, new_session) 
-    
-    mock_chat_history_db[new_id] = []
-    mock_session_meta_db[new_id] = {"topic": "새로운 주제", "name": title, "context": "", "is_manual_title": False}
-    
-    return new_session
-
-async def mock_db_get_chat_history(session_id: str) -> List[dict]:
-    return mock_chat_history_db.get(session_id, [])
 
 class MockDBInterface:
     async def load_personalization(self, user_id: str) -> str:
@@ -528,32 +663,25 @@ class MockDBInterface:
 
     async def load_session_data(self, session_id: str) -> dict:
         await asyncio.sleep(0.05)
-        return mock_session_meta_db.get(session_id, {})
+        return {}
 
     async def append_messages(self, session_id: str, messages: List[dict]):
         await asyncio.sleep(0.05)
-        if session_id not in mock_chat_history_db:
-            mock_chat_history_db[session_id] = []
-        mock_chat_history_db[session_id].extend(messages)
 
-    # 파라미터에 is_manual_title 추가
     async def save_session_state(self, session_id: str, topic: str, name: str, context: str, is_manual_title: bool):
         await asyncio.sleep(0.05)
-        if session_id in mock_session_meta_db:
-            mock_session_meta_db[session_id]["topic"] = topic
-            mock_session_meta_db[session_id]["name"] = name
-            mock_session_meta_db[session_id]["context"] = context
-            mock_session_meta_db[session_id]["is_manual_title"] = is_manual_title
-
-            for s in mock_sessions_db:
-                if s["id"] == session_id:
-                    s["title"] = name
-                    break
 
     async def get_chat_history(self, session_id: str) -> List[dict]:
         await asyncio.sleep(0.05)
-        return mock_chat_history_db.get(session_id, [])
+        return []
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+async def mock_db_get_session_list() -> List[dict]:
+    return []
+
+async def mock_db_create_session(first_message: str) -> dict:
+    new_id = f"session_{uuid.uuid4().hex[:9]}"
+    title = first_message[:20] + "..." if len(first_message) > 20 else first_message
+    return {"id": new_id, "title": title}
+
+async def mock_db_get_chat_history(session_id: str) -> List[dict]:
+    return []

@@ -1,31 +1,208 @@
 /**
  * api.js
- * handles all backend API interactions including sessions, messages, and theme preferences.
+ * handles all backend API interactions including auth, sessions, messages, and theme preferences.
  */
 
+/**
+ * TokenManager: localStorage 기반 토큰 및 사용자 정보 관리
+ */
+export const TokenManager = {
+  _keys: {
+    access: 'ta_access_token',
+    refresh: 'ta_refresh_token',
+    userId: 'ta_user_id',
+    userType: 'ta_user_type',
+    nickname: 'ta_nickname',
+    email: 'ta_email',
+  },
+
+  setTokens(accessToken, refreshToken) {
+    localStorage.setItem(this._keys.access, accessToken);
+    localStorage.setItem(this._keys.refresh, refreshToken);
+  },
+
+  setUserInfo({ userId, userType, nickname, email } = {}) {
+    if (userId !== undefined) localStorage.setItem(this._keys.userId, userId);
+    if (userType !== undefined) localStorage.setItem(this._keys.userType, userType);
+    if (nickname !== undefined) localStorage.setItem(this._keys.nickname, nickname || '');
+    if (email !== undefined) localStorage.setItem(this._keys.email, email || '');
+  },
+
+  getAccessToken() { return localStorage.getItem(this._keys.access); },
+  getRefreshToken() { return localStorage.getItem(this._keys.refresh); },
+  getUserId() { return localStorage.getItem(this._keys.userId); },
+  getUserType() { return localStorage.getItem(this._keys.userType); },
+  getNickname() { return localStorage.getItem(this._keys.nickname) || '사용자'; },
+  getEmail() { return localStorage.getItem(this._keys.email) || ''; },
+
+  isLoggedIn() { return !!localStorage.getItem(this._keys.access); },
+  isGuest() {
+    const t = localStorage.getItem(this._keys.userType);
+    return t === 'GST';
+  },
+  isMember() {
+    const t = localStorage.getItem(this._keys.userType);
+    return t === 'MEM';
+  },
+
+  clearAll() {
+    Object.values(this._keys).forEach(k => localStorage.removeItem(k));
+  },
+};
+
+
 export const BackendHooks = {
+
+  // --------------------------------------------------
+  // 내부 헬퍼: 인증 헤더 포함 fetch + 401 자동 재발급
+  // --------------------------------------------------
+
+  async _authFetch(url, options = {}) {
+    const token = TokenManager.getAccessToken();
+    const headers = {
+      ...options.headers,
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    };
+
+    let res = await fetch(url, { ...options, headers });
+
+    // 401: 자동 토큰 재발급 시도
+    if (res.status === 401 && TokenManager.getRefreshToken()) {
+      const refreshed = await this._tryRefresh();
+      if (refreshed) {
+        const newToken = TokenManager.getAccessToken();
+        headers['Authorization'] = `Bearer ${newToken}`;
+        res = await fetch(url, { ...options, headers });
+      }
+    }
+
+    return res;
+  },
+
+  async _tryRefresh() {
+    try {
+      const res = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: TokenManager.getRefreshToken() }),
+      });
+      if (!res.ok) { TokenManager.clearAll(); return false; }
+      const data = await res.json();
+      if (data.access_token) {
+        // refresh token은 그대로 유지, access token만 갱신
+        TokenManager.setTokens(data.access_token, TokenManager.getRefreshToken());
+        return true;
+      }
+      TokenManager.clearAll();
+      return false;
+    } catch {
+      return false;
+    }
+  },
+
+  // --------------------------------------------------
+  // 인증 API
+  // --------------------------------------------------
+
   /**
-   * authenticates a user.
+   * 자체 계정 로그인.
+   * 성공 시 TokenManager에 토큰 및 사용자 정보 저장.
    */
   async login(id, pw) {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, pw })
+      body: JSON.stringify({ id, pw }),
     });
-    return await res.json();
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw { status: res.status, detail: data.detail || '로그인에 실패했습니다' };
+    }
+
+    if (data.access_token && data.refresh_token) {
+      TokenManager.setTokens(data.access_token, data.refresh_token);
+      TokenManager.setUserInfo({
+        userId: data.user_id,
+        userType: data.type || 'MEM',
+      });
+    }
+    return data;
   },
 
   /**
-   * authenticates as a guest.
+   * 게스트 로그인.
    */
   async guestLogin() {
     const res = await fetch('/api/auth/guest', { method: 'POST' });
-    return await res.json();
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw { status: res.status, detail: data.detail || '게스트 로그인에 실패했습니다' };
+    }
+
+    if (data.access_token && data.refresh_token) {
+      TokenManager.setTokens(data.access_token, data.refresh_token);
+      TokenManager.setUserInfo({
+        userId: data.user_id,
+        userType: data.type || 'GST',
+        nickname: '게스트',
+      });
+    }
+    return data;
   },
 
   /**
-   * initiates social login.
+   * 회원가입.
+   */
+  async signUp(userData) {
+    const res = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw { status: res.status, detail: data.detail || '회원가입에 실패했습니다' };
+    }
+    return data;
+  },
+
+  /**
+   * 로그아웃: 서버에서 refresh token 무효화 후 로컬 토큰 삭제.
+   */
+  async logout() {
+    const refreshToken = TokenManager.getRefreshToken();
+    if (refreshToken) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+      } catch {
+        // 네트워크 오류여도 로컬 토큰은 삭제
+      }
+    }
+    TokenManager.clearAll();
+  },
+
+  /**
+   * 현재 사용자 프로필 조회.
+   */
+  async getMyProfile() {
+    try {
+      const res = await this._authFetch('/api/auth/me');
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * SNS 로그인 (Phase 7).
    */
   async socialLogin(provider) {
     const res = await fetch(`/api/auth/social/${provider}`, { method: 'POST' });
@@ -33,48 +210,36 @@ export const BackendHooks = {
   },
 
   /**
-   * initiates user sign up.
-   */
-  async signUp(userData) {
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(userData)
-    });
-    return await res.json();
-  },
-
-  /**
-   * initiates find account process.
+   * 계정 찾기 (Phase 7).
    */
   async findAccount() {
     const res = await fetch('/api/auth/find', { method: 'POST' });
     return await res.json();
   },
 
-  /**
-   * fetches the list of chat sessions by mode (personal or team).
-   */
+  // --------------------------------------------------
+  // 세션 API
+  // --------------------------------------------------
+
   async fetchSessionList(mode = 'personal') {
     try {
-      const res = await fetch(`/api/sessions?mode=${mode}`);
+      const res = await this._authFetch(`/api/sessions?mode=${mode}`);
       if (!res.ok) return [];
-      return await res.json();
+      const data = await res.json();
+      // 백엔드가 {sessions: [...], mode, user_id} 형태로 반환
+      return Array.isArray(data) ? data : (data.sessions || []);
     } catch (error) {
       console.error("API Error (fetchSessionList):", error);
       return [];
     }
   },
 
-  /**
-   * creates a new chat session.
-   */
   async createSession(firstMessage, mode = 'personal') {
     try {
-      const res = await fetch('/api/sessions', {
+      const res = await this._authFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ first_message: firstMessage, mode })
+        body: JSON.stringify({ first_message: firstMessage, mode }),
       });
       return await res.json();
     } catch (error) {
@@ -83,15 +248,12 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * updates a session's mode (moves it between personal/team).
-   */
   async updateSessionMode(sessionId, mode) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/mode`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/mode`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ mode }),
       });
       return await res.json();
     } catch (error) {
@@ -100,15 +262,12 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * invites a user to a team session.
-   */
   async inviteUserToSession(sessionId, searchInput) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/invite`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: searchInput })
+        body: JSON.stringify({ user: searchInput }),
       });
       return await res.json();
     } catch (error) {
@@ -117,48 +276,44 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches initial application context (today's date, global settings).
-   */
+  // --------------------------------------------------
+  // 컨텍스트 및 설정 API
+  // --------------------------------------------------
+
   async fetchAppContext() {
     try {
       const res = await fetch('/api/context');
       if (!res.ok) throw new Error('Not Found');
-      return await res.json(); 
-    } catch (err) {
-      console.warn("Backend /api/context not ready, using defaults.");
+      return await res.json();
+    } catch {
       return {
         today: new Date().toISOString().split('T')[0],
-        settings: { 
-          appGlassOpacity: '20', 
-          leftSidebarCustomWidth: 300, 
-          rightSidebarCustomWidth: 300, 
-          theme: 'default' 
-        }
+        settings: {
+          appGlassOpacity: '20',
+          leftSidebarCustomWidth: 300,
+          rightSidebarCustomWidth: 300,
+          theme: 'default',
+        },
       };
     }
   },
 
-  /**
-   * fetches user UI settings.
-   */
   async fetchSettings() {
     try {
-      const res = await fetch('/api/settings');
+      const res = await this._authFetch('/api/settings');
       if (!res.ok) return {};
       return await res.json();
-    } catch (e) { return {}; }
+    } catch {
+      return {};
+    }
   },
 
-  /**
-   * saves a specific UI setting.
-   */
   async saveUserSetting(key, value) {
     try {
-      const res = await fetch('/api/settings/update', {
+      const res = await this._authFetch('/api/settings/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: value })
+        body: JSON.stringify({ [key]: value }),
       });
       return await res.json();
     } catch (error) {
@@ -166,12 +321,13 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches the chat history for a specific session.
-   */
+  // --------------------------------------------------
+  // 채팅 API
+  // --------------------------------------------------
+
   async fetchChatHistory(sessionId) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/history`);
+      const res = await this._authFetch(`/api/sessions/${sessionId}/history`);
       if (!res.ok) return [];
       return await res.json();
     } catch (error) {
@@ -180,15 +336,16 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * sends a message and handles the streaming response.
-   */
   async sendMessage(sessionId, message, onChunkReceived, onCompleted) {
     try {
+      const token = TokenManager.getAccessToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const response = await fetch(`/api/sessions/${sessionId}/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
+        headers,
+        body: JSON.stringify({ message }),
       });
 
       if (!response.body) throw new Error("Streaming not supported");
@@ -210,35 +367,38 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches account information.
-   */
+  // --------------------------------------------------
+  // 계정 정보 API
+  // --------------------------------------------------
+
   async fetchAccountInfo() {
     try {
-      const res = await fetch('/api/account');
+      const res = await this._authFetch('/api/account');
       return await res.json();
-    } catch (e) { return { name: 'Guest', email: '' }; }
+    } catch {
+      return { status: 'guest', user_id: null };
+    }
   },
 
-  /**
-   * fetches help/documentation data.
-   */
+  // --------------------------------------------------
+  // 기타 API
+  // --------------------------------------------------
+
   async fetchHelpData() {
     try {
       const res = await fetch('/api/help');
       return await res.json();
-    } catch (e) { return { sections: [] }; }
+    } catch {
+      return { sections: [] };
+    }
   },
 
-  /**
-   * saves the user's theme preference.
-   */
   async saveThemePreference(themeName) {
     try {
-      const res = await fetch('/api/theme', {
+      const res = await this._authFetch('/api/theme', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme: themeName })
+        body: JSON.stringify({ theme: themeName }),
       });
       return await res.json();
     } catch (error) {
@@ -246,28 +406,22 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches current weather data.
-   */
   async fetchCurrentWeather() {
     try {
       const res = await fetch('/api/weather');
       if (!res.ok) throw new Error();
-      return await res.json(); 
-    } catch (err) {
+      return await res.json();
+    } catch {
       return { condition: 'clear', params: {} };
     }
   },
 
-  /**
-   * updates the title of a session.
-   */
   async updateSessionTitle(sessionId, newTitle) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/title`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/title`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle })
+        body: JSON.stringify({ title: newTitle }),
       });
       return await res.json();
     } catch (error) {
@@ -276,13 +430,10 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * deletes a chat session.
-   */
   async deleteSession(sessionId) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`, {
-        method: 'DELETE'
+      const res = await this._authFetch(`/api/sessions/${sessionId}`, {
+        method: 'DELETE',
       });
       return await res.json();
     } catch (error) {
@@ -291,14 +442,10 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * triggers a share action for the chat session.
-   * returns a shareable link or status.
-   */
   async shareChat(sessionId) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/share`, {
-        method: 'POST'
+      const res = await this._authFetch(`/api/sessions/${sessionId}/share`, {
+        method: 'POST',
       });
       return await res.json();
     } catch (error) {
@@ -307,22 +454,20 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * triggers a download for the chat history.
-   */
   downloadChat(sessionId) {
     window.location.href = `/api/sessions/${sessionId}/download`;
   },
 
-  /**
-   * saves map markers for a specific session.
-   */
+  // --------------------------------------------------
+  // 지도 API
+  // --------------------------------------------------
+
   async saveMapMarkers(sessionId, markers) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/map/markers`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/map/markers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markers })
+        body: JSON.stringify({ markers }),
       });
       return await res.json();
     } catch (error) {
@@ -330,12 +475,9 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches map markers for a specific session.
-   */
   async fetchMapMarkers(sessionId) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/map/markers`);
+      const res = await this._authFetch(`/api/sessions/${sessionId}/map/markers`);
       if (!res.ok) return { markers: [] };
       return await res.json();
     } catch (error) {
@@ -344,15 +486,12 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * adds a single map marker (backend-side call or parent proxy).
-   */
   async addMapMarker(sessionId, markerId, lat, lng, title = '') {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/map/markers/add`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/map/markers/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ marker_id: markerId, lat, lng, title })
+        body: JSON.stringify({ marker_id: markerId, lat, lng, title }),
       });
       return await res.json();
     } catch (error) {
@@ -360,29 +499,28 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * removes a single map marker by id.
-   */
   async removeMapMarker(sessionId, markerId) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/map/markers/${encodeURIComponent(markerId)}`, {
-        method: 'DELETE'
-      });
+      const res = await this._authFetch(
+        `/api/sessions/${sessionId}/map/markers/${encodeURIComponent(markerId)}`,
+        { method: 'DELETE' }
+      );
       return await res.json();
     } catch (error) {
       console.error("API Error (removeMapMarker):", error);
     }
   },
 
-  /**
-   * saves the trip ranges for a specific session.
-   */
+  // --------------------------------------------------
+  // 여행 일정 API
+  // --------------------------------------------------
+
   async saveTripRange(sessionId, ranges) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/trip_range`, {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/trip_range`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ranges })
+        body: JSON.stringify({ ranges }),
       });
       return await res.json();
     } catch (error) {
@@ -390,31 +528,29 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches the trip ranges for a specific session.
-   */
   async fetchTripRange(sessionId) {
     try {
       if (!sessionId || sessionId === 'default') return { ranges: [] };
-      const res = await fetch(`/api/sessions/${sessionId}/trip_range`);
+      const res = await this._authFetch(`/api/sessions/${sessionId}/trip_range`);
       if (!res.ok) return { ranges: [] };
       return await res.json();
-    } catch (error) {
+    } catch {
       return { ranges: [] };
     }
   },
 
-  /**
-   * uploads files to a specific session.
-   */
   async uploadFiles(sessionId, files) {
     try {
       const formData = new FormData();
       Array.from(files).forEach(file => formData.append('files', file));
-      
+
+      const token = TokenManager.getAccessToken();
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
       const res = await fetch(`/api/sessions/${sessionId}/files`, {
         method: 'POST',
-        body: formData 
+        headers,
+        body: formData,
       });
       return await res.json();
     } catch (error) {
@@ -423,16 +559,20 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * saves user's memo for a specific session and date.
-   */
+  // --------------------------------------------------
+  // 메모 / 플래너 API
+  // --------------------------------------------------
+
   async saveMemo(sessionId, memoContent, dateKey) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/memo?date=${dateKey}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ memo: memoContent })
-      });
+      const res = await this._authFetch(
+        `/api/sessions/${sessionId}/memo?date=${dateKey}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ memo: memoContent }),
+        }
+      );
       return await res.json();
     } catch (error) {
       console.error("API Error (saveMemo):", error);
@@ -440,30 +580,27 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches user's memo for a specific session and date.
-   */
   async fetchMemo(sessionId, dateKey) {
     try {
       if (!sessionId || sessionId === 'default') return { memo: '' };
-      const res = await fetch(`/api/sessions/${sessionId}/memo?date=${dateKey}`);
+      const res = await this._authFetch(`/api/sessions/${sessionId}/memo?date=${dateKey}`);
       if (!res.ok) return { memo: '' };
       return await res.json();
-    } catch (error) {
+    } catch {
       return { memo: '' };
     }
   },
 
-  /**
-   * updates the current schedule (plan) for a specific session and date.
-   */
   async updateSchedule(sessionId, planData, dateKey) {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/plan?date=${dateKey}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: planData })
-      });
+      const res = await this._authFetch(
+        `/api/sessions/${sessionId}/plan?date=${dateKey}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan: planData }),
+        }
+      );
       return await res.json();
     } catch (error) {
       console.error("API Error (updateSchedule):", error);
@@ -471,31 +608,27 @@ export const BackendHooks = {
     }
   },
 
-  /**
-   * fetches the current schedule (plan) for a specific session and date.
-   */
   async fetchSchedule(sessionId, dateKey) {
     try {
       if (!sessionId || sessionId === 'default') return { plan: [] };
-      const res = await fetch(`/api/sessions/${sessionId}/plan?date=${dateKey}`);
+      const res = await this._authFetch(`/api/sessions/${sessionId}/plan?date=${dateKey}`);
       if (!res.ok) return { plan: [] };
       return await res.json();
-    } catch (error) {
+    } catch {
       return { plan: [] };
     }
   },
 
-  /**
-   * fetches dates that have data (memo/schedule) for the calendar dot indicators.
-   */
   async fetchMonthDataIndicators(sessionId, year, month) {
     try {
       if (!sessionId || sessionId === 'default') return [];
-      const res = await fetch(`/api/sessions/${sessionId}/indicators?year=${year}&month=${month}`);
+      const res = await this._authFetch(
+        `/api/sessions/${sessionId}/indicators?year=${year}&month=${month}`
+      );
       if (!res.ok) return [];
       return await res.json();
-    } catch (error) {
+    } catch {
       return [];
     }
-  }
+  },
 };

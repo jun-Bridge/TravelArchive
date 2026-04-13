@@ -64,6 +64,14 @@ PERSONAL_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_MODEL_PERSONAL = os.getenv("LLM_MODEL_PERSONAL", "gpt-4o-mini")
 PERSONAL_PROMPT = "" # 이 부분은 다음 단계에서 개인화 로직 설계 시 채우겠습니다.
 
+# ==========================================
+# 5. 인증 설정 (JWT)
+# ==========================================
+ACCESS_TOKEN_SECRET_KEY = os.getenv("ACCESS_TOKEN_SECRET_KEY", "")
+REFRESH_TOKEN_SECRET_KEY = os.getenv("REFRESH_TOKEN_SECRET_KEY", "")
+ACCESS_TOKEN_EXPIRE_MINUTES = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
+REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7")
+
 
 
 

@@ -30,6 +30,7 @@ class PostgresManager:
     """
 
     _instances = {}
+    _global_registry = {}  # 모든 인스턴스가 공유하는 모델 레지스트리
 
     def __new__(cls, db_url=None):
         if db_url is None:
@@ -48,14 +49,13 @@ class PostgresManager:
         connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
         self.engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
-        self._registry = {}
 
     # =========================================================
     # 모델 등록 및 테이블 생성
     # =========================================================
 
     def register_model(self, model_name: str, model_class):
-        self._registry[model_name] = model_class
+        PostgresManager._global_registry[model_name] = model_class
         print(f"[PostgresManager] 모델 등록 완료: {model_name}")
 
     def create_tables(self, base_metadata):
@@ -86,7 +86,7 @@ class PostgresManager:
         # model이 필요한 액션은 registry에서 조회
         model_class = None
         if model_name:
-            model_class = self._registry.get(model_name)
+            model_class = PostgresManager._global_registry.get(model_name)
             if not model_class:
                 return {"status": "error", "reason": f"Model '{model_name}' is not registered"}
 
