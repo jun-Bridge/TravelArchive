@@ -11,6 +11,7 @@ import { CalendarManager } from './js/calendar.js';
 import { ScheduleManager } from './js/schedule.js';
 import { router } from './js/router.js';
 import { ThemeManager } from './js/theme.js';
+import { initRightSidebarMarkerPanel } from './js/components/map/map-right-sidebar-marker-panel.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
   // 1. Elements Collection
@@ -253,6 +254,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       SidebarManager.initResizers(elements, config);
       SidebarManager.initFolding(elements);
       ThemeManager.init(elements);
+
+      // 마커 정보 패널 초기화 (map iframe과 postMessage 통신)
+      const mapContainerEl = document.getElementById('kakaoMapContainer');
+      if (mapContainerEl) {
+        try {
+          initRightSidebarMarkerPanel({ mapContainerEl });
+        } catch (e) {
+          console.warn('[Map Marker Panel] 초기화 실패:', e);
+        }
+      }
 
       router(state, elements);
     } catch (e) {
