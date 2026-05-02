@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Travel Archive - 로그인</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .login-container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      width: 100%;
+      max-width: 420px;
+      padding: 40px 30px;
+      animation: slideUp 0.4s ease-out;
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .login-header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .login-logo {
+      font-size: 48px;
+      line-height: 1;
+      margin-bottom: 16px;
+    }
+
+    .login-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: rgba(17, 24, 39, 0.95);
+      margin-bottom: 8px;
+    }
+
+    .login-subtitle {
+      font-size: 14px;
+      color: rgba(75, 85, 99, 0.7);
+      line-height: 1.5;
+    }
+
+    .login-divider {
+      height: 1px;
+      background: rgba(229, 231, 235, 1);
+      margin: 32px 0;
+    }
+
+    .kakao-login-btn {
+      width: 100%;
+      height: 48px;
+      border: none;
+      border-radius: 12px;
+      background: #FFE812;
+      color: rgba(0, 0, 0, 0.85);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 12px rgba(255, 232, 18, 0.3);
+    }
+
+    .kakao-login-btn:hover {
+      background: #FFD700;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px rgba(255, 232, 18, 0.4);
+    }
+
+    .kakao-login-btn:active {
+      transform: translateY(0);
+    }
+
+    .kakao-login-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .guest-login-btn {
+      width: 100%;
+      height: 48px;
+      border: 2px solid rgba(229, 231, 235, 1);
+      border-radius: 12px;
+      background: transparent;
+      color: rgba(75, 85, 99, 0.85);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      margin-top: 12px;
+    }
+
+    .guest-login-btn:hover {
+      border-color: rgba(102, 126, 234, 0.5);
+      background: rgba(102, 126, 234, 0.05);
+      color: rgba(102, 126, 234, 1);
+    }
+
+    .login-footer {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 12px;
+      color: rgba(107, 114, 128, 0.8);
+      line-height: 1.6;
+    }
+
+    .login-footer a {
+      color: rgba(102, 126, 234, 1);
+      text-decoration: none;
+      font-weight: 600;
+      transition: color 0.2s;
+    }
+
+    .login-footer a:hover {
+      color: rgba(102, 126, 234, 0.85);
+      text-decoration: underline;
+    }
+
+    .login-loading {
+      display: none;
+      text-align: center;
+      margin-top: 16px;
+    }
+
+    .login-loading.show {
+      display: block;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(102, 126, 234, 0.2);
+      border-top-color: rgba(102, 126, 234, 1);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 8px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .login-error {
+      display: none;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: rgba(139, 0, 0, 0.9);
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 20px;
+      animation: slideDown 0.3s ease-out;
+    }
+
+    .login-error.show {
+      display: block;
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .login-error-close {
+      float: right;
+      cursor: pointer;
+      font-weight: bold;
+      margin-left: 12px;
+    }
+
+    /* 반응형 */
+    @media (max-width: 480px) {
+      .login-container {
+        padding: 32px 20px;
+      }
+
+      .login-title {
+        font-size: 24px;
+      }
+
+      .kakao-login-btn,
+      .guest-login-btn {
+        height: 44px;
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <!-- 에러 메시지 -->
+    <div class="login-error" id="errorMessage">
+      <span id="errorText"></span>
+      <span class="login-error-close" onclick="document.getElementById('errorMessage').classList.remove('show')">×</span>
+    </div>
+
+    <!-- 헤더 -->
+    <div class="login-header">
+      <div class="login-logo">🗺️</div>
+      <h1 class="login-title">Travel Archive</h1>
+      <p class="login-subtitle">
+        여행 경로를 기록하고 공유해보세요
+      </p>
+    </div>
+
+    <!-- 구분선 -->
+    <div class="login-divider"></div>
+
+    <!-- 로그인 버튼들 -->
+    <button class="guest-login-btn" id="guestLoginBtn">
+      게스트로 이용하기
+    </button>
+
+    <!-- 로딩 -->
+    <div class="login-loading" id="loadingIndicator">
+      <div class="spinner"></div>
+      <p>로그인 중입니다...</p>
+    </div>
+
+    <!-- 푸터 -->
+    <div class="login-footer">
+      로그인하면 <a href="#">이용약관</a>과 <a href="#">개인정보 처리방침</a>에 동의합니다
+    </div>
+  </div>
+
+  <script type="module">
+    // [이벤트] 게스트 로그인 버튼 클릭 시
+    document.getElementById('guestLoginBtn').addEventListener('click', () => {
+      // 로딩 인디케이터 활성화
+      showLoading(true);
+
+      // 백엔드에 게스트 세션 생성 요청
+      fetch('/api/auth/guest', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          if (data.accessToken) {
+            // 인증 성공 시 토큰 및 사용자 정보를 저장하고 대시보드로 이동
+            localStorage.setItem('authToken', data.accessToken);
+            sessionStorage.setItem('accessToken', data.accessToken);
+            localStorage.setItem('user', JSON.stringify(data.user));
+            window.location.href = '/dashboard';
+          } else {
+            showError('게스트 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.');
+          }
+        })
+        .catch(() => showError('네트워크 연결이 원활하지 않습니다.'))
+        .finally(() => showLoading(false));
+    });
+
+    /**
+     * 로딩 상태에 따라 스피너 UI를 제어합니다.
+     * @param {boolean} show 표시 여부
+     */
+    function showLoading(show) {
+      document.getElementById('loadingIndicator').classList.toggle('show', show);
+    }
+
+    /**
+     * 에러 메시지를 사용자에게 표시합니다.
+     * @param {string} message 표시할 오류 내용
+     */
+    function showError(message) {
+      const errorEl = document.getElementById('errorMessage');
+      document.getElementById('errorText').textContent = message;
+      errorEl.classList.add('show');
+      
+      // 5초 후 자동으로 에러 메시지 닫기
+      setTimeout(() => errorEl.classList.remove('show'), 5000);
+    }
+
+    // [초기화] 기존에 유효한 세션이 남아있는 경우 자동으로 대시보드로 이동
+    if (localStorage.getItem('user') && sessionStorage.getItem('accessToken')) {
+      window.location.href = '/dashboard';
+    }
+  </script>
+</body>
+</html>
