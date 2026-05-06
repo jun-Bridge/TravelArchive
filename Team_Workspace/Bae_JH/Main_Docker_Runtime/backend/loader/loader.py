@@ -157,12 +157,12 @@ class Loader:
             "action": "raw_sql",
             "sql": """
                 SELECT tr.trip_id, tr.title, tr.color, tr.destination,
-                       tr.start_date, tr.end_date, tr.status,
+                       tr.start_date, tr.end_date, tr.status, tr.is_misc,
                        tr.team_id, tr.created_by, tr.created_at
                 FROM trips tr
                 JOIN team_members tm ON tr.team_id = tm.team_id
                 WHERE tm.user_id = :user_id AND tr.status != 'deleted'
-                ORDER BY tr.created_at DESC
+                ORDER BY tr.is_misc ASC, tr.created_at DESC
             """,
             "params": {"user_id": user_id},
         })
@@ -217,42 +217,93 @@ class Loader:
 
     @staticmethod
     async def delete_trip(postgres, trip_id: str, user_id: str) -> dict:
+        # 소속 세션을 기타 trip으로 이전
+        misc_trip_id = await Loader.ensure_misc_trip(postgres, user_id)
+        now = datetime.now(tz=timezone.utc)
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                UPDATE sessions SET trip_id = :misc_id, updated_at = :now
+                WHERE trip_id = :trip_id AND is_active = true
+            """,
+            "params": {"misc_id": misc_trip_id, "trip_id": trip_id, "now": now},
+        })
         await postgres.execute({
             "action":  "update", "model": "Trip",
             "filters": {"trip_id": trip_id, "created_by": user_id},
-            "data":    {"status": "deleted", "updated_at": datetime.now(tz=timezone.utc)},
+            "data":    {"status": "deleted", "updated_at": now},
         })
         return {"success": True}
 
     # ── 세션 ────────────────────────────────────────────────
 
     @staticmethod
+    async def ensure_misc_trip(postgres, user_id: str) -> str:
+        """
+        사용자의 '기타' trip(is_misc=true)이 없으면 생성하고 trip_id 반환.
+        세션 생성 및 여행 계획 삭제 시 기본 귀속처로 사용.
+        """
+        from ..system.team_service import TeamService
+        team_id = await TeamService.ensure_personal_team(user_id, postgres)
+
+        result = await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                SELECT tr.trip_id FROM trips tr
+                WHERE tr.team_id = :team_id AND tr.is_misc = true
+                LIMIT 1
+            """,
+            "params": {"team_id": team_id},
+        })
+        rows = result.get("data", [])
+        if rows:
+            return rows[0]["trip_id"]
+
+        trip_id = "trip_" + str(uuid.uuid4())[:8]
+        now = datetime.now(tz=timezone.utc)
+        await postgres.execute({
+            "action": "create", "model": "Trip",
+            "data": {
+                "trip_id":    trip_id,
+                "team_id":    team_id,
+                "created_by": user_id,
+                "title":      "기타",
+                "is_misc":    True,
+                "status":     "planning",
+                "created_at": now,
+                "updated_at": now,
+            },
+        })
+        return trip_id
+
+    @staticmethod
     async def get_session_list(postgres, user_id: str,
                                 trip_id: Optional[str] = None) -> list:
         """
-        사용자의 세션 목록 반환 (팀/개인 통합).
-        팀 세션(참여자 2명 이상) 먼저, 그 다음 개인 세션 — 각 그룹 내에서 updated_at DESC.
-        trip_id=None → 전체, trip_id='none' → trip 없는 세션, trip_id=값 → 해당 여행 세션.
+        사용자의 세션 목록 반환.
+        팀 세션(참여자 2명 이상) 먼저, 같은 경우 updated_at DESC.
+        trip_id=None → 전체, trip_id='misc' → 기타 trip 세션, trip_id=값 → 해당 여행 세션.
         unread_count: 내가 마지막으로 읽은 이후 다른 사람이 보낸 메시지 수.
         """
         trip_filter = ""
         params: dict = {"user_id": user_id}
 
-        if trip_id == "none":
-            trip_filter = "AND s.trip_id IS NULL"
+        if trip_id == "misc":
+            trip_filter = "AND tr.is_misc = true"
         elif trip_id:
             trip_filter = "AND s.trip_id = :trip_id"
             params["trip_id"] = trip_id
 
         sql = f"""
             SELECT
-                s.session_id, s.title, s.topic, s."mode", s.color,
+                s.session_id, s.title, s.topic, s.color,
                 s.trip_id, s.is_manual_title, s.created_at, s.updated_at,
                 tr.color  AS trip_color,
                 tr.title  AS trip_title,
+                tr.is_misc AS trip_is_misc,
                 sp_me.role AS user_role,
                 (
-                    SELECT COUNT(*) FROM session_participants sp2
+                    SELECT COUNT(*) - 1 FROM session_participants sp2
                     WHERE sp2.session_id = s.session_id
                 ) AS participant_count,
                 (
@@ -268,7 +319,7 @@ class Loader:
             WHERE s.is_active = true
               {trip_filter}
             ORDER BY
-                (SELECT COUNT(*) FROM session_participants sp3
+                (SELECT COUNT(*) - 1 FROM session_participants sp3
                  WHERE sp3.session_id = s.session_id) > 1 DESC,
                 s.updated_at DESC
         """
@@ -288,7 +339,6 @@ class Loader:
                 "session_id":      session_id,
                 "trip_id":         data.get("trip_id"),
                 "created_by":      user_id,
-                "mode":            data.get("mode", "personal"),
                 "title":           title,
                 "is_manual_title": False,
                 "is_active":       True,
@@ -306,6 +356,16 @@ class Loader:
                 "last_read_at": now,
             },
         })
+        # bot은 상수 -1 슬롯 — 항상 1자리 차지 (인원수 계산에서 차감)
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                INSERT INTO session_participants (session_id, user_id, role, joined_at)
+                VALUES (:sid, 'bot', 'bot', :now)
+                ON CONFLICT (session_id, user_id) DO NOTHING
+            """,
+            "params": {"sid": session_id, "now": now},
+        })
         return {"session_id": session_id, "title": title}
 
     @staticmethod
@@ -313,7 +373,7 @@ class Loader:
         now = datetime.now(tz=timezone.utc)
         update_data = {"updated_at": now}
         for field in ("title", "is_manual_title", "topic", "context_summary",
-                       "trip_id", "mode", "is_active", "color"):
+                       "trip_id", "is_active", "color"):
             if field in data:
                 update_data[field] = data[field]
 
@@ -334,54 +394,86 @@ class Loader:
         return {"success": True}
 
     @staticmethod
-    async def leave_or_delete_session(postgres, session_id: str, user_id: str) -> dict:
+    async def leave_session(postgres, session_id: str, user_id: str) -> dict:
         """
-        마스터: 다른 참여자가 있으면 가입순 다음 참여자에게 마스터 이전 후 자신만 제거.
-                혼자라면 세션 자체를 비활성화.
-        비마스터: 참여자 목록에서만 제거.
+        팀원(비마스터) 본인 탈퇴 — 자신만 참여자 목록에서 제거.
+        마스터가 호출하면 403 (마스터는 master_kick_all 또는 세션 삭제를 사용).
         """
         r = await postgres.execute({
             "action": "raw_sql",
-            "sql": """
-                SELECT user_id, role, joined_at
-                FROM session_participants
-                WHERE session_id = :sid
-                ORDER BY joined_at ASC
-            """,
-            "params": {"sid": session_id},
+            "sql": "SELECT role FROM session_participants WHERE session_id = :sid AND user_id = :uid",
+            "params": {"sid": session_id, "uid": user_id},
         })
-        participants = r.get("data", [])
-
-        me = next((p for p in participants if p["user_id"] == user_id), None)
-        if not me:
-            return {"success": True, "deleted": False}
-
-        others = [p for p in participants if p["user_id"] != user_id]
-
-        if me["role"] == "master":
-            if not others:
-                # 혼자 → 세션 삭제
-                await postgres.execute({
-                    "action":  "update", "model": "Session",
-                    "filters": {"session_id": session_id},
-                    "data":    {"is_active": False, "updated_at": datetime.now(tz=timezone.utc)},
-                })
-                return {"success": True, "deleted": True}
-            else:
-                # 가입순 첫 번째 참여자에게 마스터 이전
-                next_master = others[0]["user_id"]
-                await postgres.execute({
-                    "action":  "update", "model": "SessionParticipant",
-                    "filters": {"session_id": session_id, "user_id": next_master},
-                    "data":    {"role": "master"},
-                })
-        # 자신을 참여자 목록에서 제거
+        rows = r.get("data", [])
+        if not rows:
+            return {"success": True}
+        if rows[0]["role"] == "master":
+            raise HTTPException(status_code=403,
+                                detail="마스터는 직접 나갈 수 없습니다. 세션 설정에서 전환하거나 삭제하세요.")
         await postgres.execute({
             "action": "raw_sql",
             "sql": "DELETE FROM session_participants WHERE session_id = :sid AND user_id = :uid",
             "params": {"sid": session_id, "uid": user_id},
         })
-        return {"success": True, "deleted": False}
+        return {"success": True}
+
+    @staticmethod
+    async def leave_as_master(postgres, session_id: str, user_id: str) -> dict:
+        """
+        마스터가 세션에서 나가는 처리.
+        - 마스터 본인을 session_participants에서 제거.
+        - 남은 참여자가 있으면 joined_at 기준 가장 오래된 참여자에게 master 역할 부여.
+        - 남은 참여자가 없으면 세션 비활성화.
+        Returns: {"success": True, "deleted": bool, "new_master": str|None}
+        """
+        r = await postgres.execute({
+            "action": "raw_sql",
+            "sql": "SELECT role FROM session_participants WHERE session_id = :sid AND user_id = :uid",
+            "params": {"sid": session_id, "uid": user_id},
+        })
+        rows = r.get("data", [])
+        if not rows:
+            raise HTTPException(status_code=404, detail="세션 참여자가 아닙니다")
+        if rows[0]["role"] != "master":
+            raise HTTPException(status_code=403, detail="마스터만 이 작업을 수행할 수 있습니다")
+
+        # 마스터 제거
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": "DELETE FROM session_participants WHERE session_id = :sid AND user_id = :uid",
+            "params": {"sid": session_id, "uid": user_id},
+        })
+
+        # 남은 참여자 조회 (joined_at 오래된 순)
+        remaining = await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                SELECT user_id FROM session_participants
+                WHERE session_id = :sid
+                ORDER BY joined_at ASC
+                LIMIT 1
+            """,
+            "params": {"sid": session_id},
+        })
+        next_rows = remaining.get("data", [])
+
+        if not next_rows:
+            # 아무도 없으면 세션 비활성화
+            await postgres.execute({
+                "action":  "update", "model": "Session",
+                "filters": {"session_id": session_id},
+                "data":    {"is_active": False, "updated_at": datetime.now(tz=timezone.utc)},
+            })
+            return {"success": True, "deleted": True, "new_master": None}
+
+        # 다음 마스터 승계
+        new_master_id = next_rows[0]["user_id"]
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": "UPDATE session_participants SET role = 'master' WHERE session_id = :sid AND user_id = :uid",
+            "params": {"sid": session_id, "uid": new_master_id},
+        })
+        return {"success": True, "deleted": False, "new_master": new_master_id}
 
     @staticmethod
     async def get_session_role(postgres, session_id: str, user_id: str) -> Optional[str]:
@@ -400,8 +492,8 @@ class Loader:
         sr = await postgres.execute({
             "action": "raw_sql",
             "sql": """
-                SELECT s.session_id, s.title, s.mode, s.created_at, s.trip_id,
-                       t.title AS trip_title, t.color AS trip_color
+                SELECT s.session_id, s.title, s.created_at, s.trip_id,
+                       t.title AS trip_title, t.color AS trip_color, t.is_misc AS trip_is_misc
                 FROM sessions s
                 LEFT JOIN trips t ON t.trip_id = s.trip_id
                 WHERE s.session_id = :sid
@@ -417,7 +509,7 @@ class Loader:
                        COALESCE(up.nickname, sp.user_id) AS nickname
                 FROM session_participants sp
                 LEFT JOIN user_profile up ON up.user_id = sp.user_id
-                WHERE sp.session_id = :sid
+                WHERE sp.session_id = :sid AND sp.user_id != 'bot'
                 ORDER BY sp.joined_at ASC
             """,
             "params": {"sid": session_id},
@@ -432,14 +524,14 @@ class Loader:
             })
 
         return {
-            "session_id":  session_id,
-            "title":       session.get("title", ""),
-            "mode":        session.get("mode", "personal"),
-            "created_at":  str(session.get("created_at", "")),
-            "trip_id":     session.get("trip_id"),
-            "trip_title":  session.get("trip_title"),
-            "trip_color":  session.get("trip_color"),
-            "participants": participants,
+            "session_id":    session_id,
+            "title":         session.get("title", ""),
+            "created_at":    str(session.get("created_at", "")),
+            "trip_id":       session.get("trip_id"),
+            "trip_title":    session.get("trip_title"),
+            "trip_color":    session.get("trip_color"),
+            "trip_is_misc":  session.get("trip_is_misc", False),
+            "participants":  participants,
         }
 
     # ── 대화 기록 ────────────────────────────────────────────
@@ -503,19 +595,19 @@ class Loader:
 
     @staticmethod
     async def search_users(postgres, q: str, current_user_id: Optional[str] = None) -> dict:
-        """닉네임으로 사용자 검색 (ILIKE). 자신은 결과에서 제외."""
+        """이메일로 사용자 검색 (정확히 일치). 자신은 결과에서 제외."""
         result = await postgres.execute({
             "action": "raw_sql",
             "sql": """
-                SELECT up.user_id, up.nickname
+                SELECT up.user_id, up.nickname, up.email
                 FROM user_profile up
                 JOIN users u ON up.user_id = u.user_id
-                WHERE up.nickname ILIKE :q
+                WHERE up.email = :q
                   AND u.status = 'active'
                   AND (:exclude_id IS NULL OR up.user_id != :exclude_id)
                 LIMIT 10
             """,
-            "params": {"q": f"%{q}%", "exclude_id": current_user_id},
+            "params": {"q": q.strip().lower(), "exclude_id": current_user_id},
         })
         return {"users": result.get("data", [])}
 
@@ -542,6 +634,7 @@ class Loader:
                     AND n.reference_type = 'user'
                 WHERE n.user_id = :user_id
                   AND n.is_read = false
+                  AND n.created_at > NOW() - INTERVAL '30 days'
                 ORDER BY n.created_at DESC
                 LIMIT 50
             """,
@@ -586,26 +679,34 @@ class Loader:
                     "last_read_at": now,
                 },
             })
-            # 참여자가 2명 이상이 되면 세션 mode를 team으로 자동 전환
-            cnt_r = await postgres.execute({
-                "action": "raw_sql",
-                "sql": "SELECT COUNT(*) AS cnt FROM session_participants WHERE session_id = :sid",
-                "params": {"sid": session_id},
-            })
-            cnt = int((cnt_r.get("data") or [{}])[0].get("cnt", 0))
-            if cnt >= 2:
-                await postgres.execute({
-                    "action":  "update", "model": "Session",
-                    "filters": {"session_id": session_id},
-                    "data":    {"mode": "team", "updated_at": datetime.now(tz=timezone.utc)},
-                })
-
         await postgres.execute({
             "action": "update", "model": "Notification",
             "filters": {"notification_id": notification_id},
             "data": {"is_read": True},
         })
         return {"success": True, "session_id": session_id}
+
+    @staticmethod
+    async def move_session_to_trip(postgres, session_id: str, trip_id: Optional[str], user_id: str) -> dict:
+        """세션의 소속 여행 계획 변경. trip_id=None이면 기타 trip으로 이동."""
+        from datetime import datetime, timezone
+        if trip_id is None:
+            misc = await Loader.ensure_misc_trip(postgres, user_id)
+            trip_id = misc["trip_id"]
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                UPDATE sessions SET trip_id = :trip_id, updated_at = :now
+                WHERE session_id = :sid
+                  AND session_id IN (
+                    SELECT session_id FROM session_participants
+                    WHERE user_id = :uid AND role = 'master'
+                  )
+            """,
+            "params": {"trip_id": trip_id, "sid": session_id, "uid": user_id,
+                       "now": datetime.now(timezone.utc)},
+        })
+        return {"success": True}
 
     @staticmethod
     async def dismiss_notification(postgres, notification_id: str, user_id: str) -> dict:
@@ -618,10 +719,10 @@ class Loader:
 
     @staticmethod
     async def clear_viewed_notifications(postgres, user_id: str) -> dict:
-        """읽음 처리된 알림을 is_read=true로 일괄 표시 (DB 유지, UI 숨김용)."""
+        """모든 알림을 DB에서 삭제."""
         await postgres.execute({
             "action": "raw_sql",
-            "sql": "UPDATE notifications SET is_read = true WHERE user_id = :uid",
+            "sql": "DELETE FROM notifications WHERE user_id = :uid",
             "params": {"uid": user_id},
         })
         return {"success": True}

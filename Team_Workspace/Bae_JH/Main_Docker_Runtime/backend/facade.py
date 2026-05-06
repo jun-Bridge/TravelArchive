@@ -77,12 +77,8 @@ class TempMessageRequest(BaseModel):
 
 class SessionCreateRequest(BaseModel):
     first_message: str
-    mode: str = "personal"
     trip_id: Optional[str] = None
     plan_id: Optional[str] = None  # 하위 호환 (trip_id 별칭)
-
-class SessionModeUpdateRequest(BaseModel):
-    mode: str
 
 class SessionColorUpdateRequest(BaseModel):
     color: str
@@ -92,6 +88,9 @@ class InviteRequest(BaseModel):
 
 class TitleUpdateRequest(BaseModel):
     title: str
+
+class SessionTripUpdateRequest(BaseModel):
+    trip_id: Optional[str] = None  # None = 기타로 이동
 
 class MessageRequest(BaseModel):
     message: str
@@ -451,19 +450,28 @@ async def create_session(req: SessionCreateRequest, request: Request,
                           user_id: str = Depends(get_current_user)):
     effective_trip = req.trip_id or req.plan_id
     return await Router.create_session(
-        req.first_message, req.mode, user_id, effective_trip,
+        req.first_message, None, user_id, effective_trip,
         request.app.state.postgres, request.app.state.redis)
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
+    """마스터 전용: 세션 삭제 (팀원 전원 kicked 후 비활성화)."""
     return await Router.delete_session(session_id, user_id,
                                         request.app.state.postgres, request.app.state.redis)
 
-@app.put("/api/sessions/{session_id}/mode")
-async def update_session_mode(session_id: str, req: SessionModeUpdateRequest,
-                               request: Request, user_id: str = Depends(get_current_user)):
-    return await Router.update_session_mode(session_id, req.mode, user_id,
+@app.post("/api/sessions/{session_id}/leave")
+async def leave_session(session_id: str, request: Request,
+                         user_id: str = Depends(get_current_user)):
+    """팀원 전용: 본인 탈퇴."""
+    return await Router.leave_session(session_id, user_id,
+                                       request.app.state.postgres, request.app.state.redis)
+
+@app.post("/api/sessions/{session_id}/convert-personal")
+async def convert_to_personal(session_id: str, request: Request,
+                               user_id: str = Depends(get_current_user)):
+    """마스터 전용: 팀원 전원 퇴장 후 개인 세션으로 전환."""
+    return await Router.convert_to_personal(session_id, user_id,
                                              request.app.state.postgres,
                                              request.app.state.redis)
 
@@ -505,6 +513,11 @@ async def update_session_color(session_id: str, req: SessionColorUpdateRequest,
                                 request: Request, user_id: str = Depends(get_current_user)):
     return await Router.update_session_color(session_id, req.color, user_id,
                                               request.app.state.postgres)
+
+@app.patch("/api/sessions/{session_id}/trip")
+async def update_session_trip(session_id: str, req: SessionTripUpdateRequest,
+                               request: Request, user_id: str = Depends(get_current_user)):
+    return await Loader.move_session_to_trip(request.app.state.postgres, session_id, req.trip_id, user_id)
 
 
 # ============================================================

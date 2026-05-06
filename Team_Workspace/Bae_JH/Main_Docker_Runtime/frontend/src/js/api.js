@@ -302,6 +302,20 @@ export const BackendHooks = {
     }
   },
 
+  async moveSessionToTrip(sessionId, tripId) {
+    try {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/trip`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trip_id: tripId || null }),
+      });
+      return await res.json();
+    } catch (error) {
+      console.error('API Error (moveSessionToTrip):', error);
+      throw error;
+    }
+  },
+
   // 하위 호환 별칭
   async fetchPlanList() {
     return this.fetchTripList();
@@ -373,9 +387,9 @@ export const BackendHooks = {
     }
   },
 
-  async createSession(firstMessage, mode = 'personal', tripId = null) {
+  async createSession(firstMessage, tripId = null) {
     try {
-      const body = { first_message: firstMessage, mode };
+      const body = { first_message: firstMessage };
       if (tripId) body.trip_id = tripId;
       const res = await this._authFetch('/api/sessions', {
         method: 'POST',
@@ -389,16 +403,32 @@ export const BackendHooks = {
     }
   },
 
-  async updateSessionMode(sessionId, mode) {
+  async deleteSession(sessionId) {
     try {
-      const res = await this._authFetch(`/api/sessions/${sessionId}/mode`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      });
+      const res = await this._authFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
       return await res.json();
     } catch (error) {
-      console.error("API Error (updateSessionMode):", error);
+      console.error("API Error (deleteSession):", error);
+      throw error;
+    }
+  },
+
+  async leaveSession(sessionId) {
+    try {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/leave`, { method: 'POST' });
+      return await res.json();
+    } catch (error) {
+      console.error("API Error (leaveSession):", error);
+      throw error;
+    }
+  },
+
+  async convertToPersonal(sessionId) {
+    try {
+      const res = await this._authFetch(`/api/sessions/${sessionId}/convert-personal`, { method: 'POST' });
+      return await res.json();
+    } catch (error) {
+      console.error("API Error (convertToPersonal):", error);
       throw error;
     }
   },
@@ -550,28 +580,42 @@ export const BackendHooks = {
       const res = await this._authFetch(
         `/api/sessions/${sessionId}/history?limit=${limit}&offset=${offset}`
       );
-      if (!res.ok) return { messages: [], mode: 'personal' };
+      if (!res.ok) return { messages: [] };
       const data = await res.json();
-      if (Array.isArray(data)) return { messages: data, mode: 'personal' };
-      return { messages: data.messages || [], mode: data.mode || 'personal' };
+      if (Array.isArray(data)) return { messages: data };
+      return { messages: data.messages || [] };
     } catch (error) {
       console.error("API Error (fetchChatHistory):", error);
-      return { messages: [], mode: 'personal' };
+      return { messages: [] };
     }
   },
 
-  async sendTeamMessage(sessionId, message) {
+  async sendTeamMessage(sessionId, message, onBotChunk, onBotDone) {
     try {
       const token = TokenManager.getAccessToken();
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      await fetch(`/api/sessions/${sessionId}/team-message`, {
+      const response = await fetch(`/api/sessions/${sessionId}/team-message`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ message }),
       });
+      if (!response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let botText = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (!chunk) continue;
+        botText += chunk;
+        onBotChunk?.(botText);
+      }
+      if (botText) onBotDone?.();
     } catch (error) {
       console.error('API Error (sendTeamMessage):', error);
+      onBotDone?.();
     }
   },
 
@@ -679,18 +723,6 @@ export const BackendHooks = {
       return await res.json();
     } catch (error) {
       console.error("API Error (updateSessionTitle):", error);
-      throw error;
-    }
-  },
-
-  async deleteSession(sessionId) {
-    try {
-      const res = await this._authFetch(`/api/sessions/${sessionId}`, {
-        method: 'DELETE',
-      });
-      return await res.json();
-    } catch (error) {
-      console.error("API Error (deleteSession):", error);
       throw error;
     }
   },

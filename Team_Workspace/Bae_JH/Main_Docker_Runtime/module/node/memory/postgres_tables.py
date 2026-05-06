@@ -157,6 +157,7 @@ class Trip(Base):
     end_date        = Column(Date,         nullable=True)
     expected_budget = Column(Numeric(15, 2), nullable=True)
     cover_img_url   = Column(Text,         nullable=True)
+    is_misc         = Column(Boolean,      nullable=False, server_default="false")  # '기타' 기본 trip
     status          = Column(String(20),   nullable=False, server_default="planning")
     created_at      = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at      = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
@@ -188,7 +189,6 @@ class Session(Base):
     session_id      = Column(String(50),  primary_key=True)
     trip_id         = Column(String(50),  ForeignKey("trips.trip_id", ondelete="SET NULL"), nullable=True)
     created_by      = Column(String(40),  ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
-    mode            = Column(String(20),  nullable=False, server_default="personal")  # personal / team
     title           = Column(String(255), nullable=True)
     color           = Column(String(20),  nullable=True)
     is_manual_title = Column(Boolean,     nullable=False, server_default="false")

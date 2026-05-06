@@ -215,6 +215,7 @@ function _tripCardHTML(trip, idx) {
   return `
     <div class="trip-card" data-trip-id="${trip.trip_id}"
          style="--i:${idx}; --card-bg:${bg}; --card-accent:${acc}; --card-icon:${acc}">
+      <button class="trip-card-delete-btn" data-delete-trip-id="${trip.trip_id}" title="여행 삭제">&times;</button>
       <div class="trip-card-map-icon">${MAP_ICON}</div>
       <div class="trip-card-title">${trip.title || '이름 없는 여행'}</div>
       <div class="trip-card-footer">
@@ -232,9 +233,9 @@ export const HomeManager = {
    * @param {Function}    onNewSession  새 세션 생성 콜백 (destination: string|null)
    * @param {Function}    onTripSelect  여행 카드 선택 콜백 (tripId, tripTitle, tripColor)
    */
-  async render(container, onNewSession, onTripSelect) {
+  async render(container, onNewSession, onTripSelect, onTripCreated) {
     const nickname = TokenManager.getNickname();
-    const trips    = await BackendHooks.fetchTripList();
+    const trips    = (await BackendHooks.fetchTripList()).filter(t => !t.is_misc);
 
     const cardsHTML  = trips.map((t, i) => _tripCardHTML(t, i)).join('');
     const newCardIdx = trips.length;
@@ -250,23 +251,38 @@ export const HomeManager = {
 
           <div class="trip-card trip-card-new" style="--i:${newCardIdx}">
             <div class="trip-card-new-plus">+</div>
-            <div class="trip-card-new-label">새 대화 시작</div>
+            <div class="trip-card-new-label">새 여행 계획</div>
           </div>
         </div>
       </div>
 
       <div class="new-trip-overlay" id="newTripOverlay">
         <div class="new-trip-modal">
-          <p class="new-trip-modal-title">새 대화를 시작합니다</p>
+          <p class="new-trip-modal-title">새 여행 계획을 만듭니다</p>
           <input class="new-trip-modal-input" id="newTripInput"
-                 placeholder="첫 메시지를 입력하세요 (선택)" autocomplete="off" />
-          <button class="new-trip-modal-submit" id="newTripSubmit" type="button">시작하기</button>
-          <p class="new-trip-modal-hint">Enter로 시작 · Esc로 닫기</p>
+                 placeholder="여행 이름을 입력하세요" autocomplete="off" />
+          <button class="new-trip-modal-submit" id="newTripSubmit" type="button">만들기</button>
+          <p class="new-trip-modal-hint">Enter로 만들기 · Esc로 닫기</p>
         </div>
       </div>
     `;
 
-    // 여행 카드 클릭 → 세션 필터 (드롭다운과 동일 효과)
+    // 여행 카드 삭제 버튼
+    container.querySelectorAll('.trip-card-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const tid = btn.dataset.deleteTripId;
+        if (!confirm('이 여행 계획을 삭제하시겠습니까?\n소속된 세션 기록은 기타(기타)로 이동됩니다.')) return;
+        try {
+          await BackendHooks.deleteTrip(tid);
+          onTripCreated?.();  // 드롭다운 + 홈 카드 갱신
+        } catch (e) {
+          console.error('[Home] 여행 삭제 실패:', e);
+        }
+      });
+    });
+
+    // 여행 카드 클릭 → 세션 필터
     container.querySelectorAll('.trip-card[data-trip-id]').forEach(card => {
       card.addEventListener('click', () => {
         const tid   = card.dataset.tripId;
@@ -276,14 +292,27 @@ export const HomeManager = {
       });
     });
 
-    // 새 대화 (+) 카드 → 모달 열기
+    // 새 여행 계획 (+) 카드 → 이름 입력 모달
     const overlay   = container.querySelector('#newTripOverlay');
     const tripInput = container.querySelector('#newTripInput');
     const submitBtn = container.querySelector('#newTripSubmit');
 
     const openModal  = () => { overlay.classList.add('visible'); tripInput.value = ''; setTimeout(() => tripInput.focus(), 60); };
     const closeModal = () => overlay.classList.remove('visible');
-    const submitModal = () => { const msg = tripInput.value.trim(); closeModal(); onNewSession(msg || null); };
+    const submitModal = async () => {
+      const name = tripInput.value.trim();
+      if (!name) return;
+      closeModal();
+      try {
+        const trip = await BackendHooks.createTrip({ title: name });
+        const tripId = trip?.trip_id;
+        // 계획 생성과 동시에 첫 세션 자동 생성 → 채팅창 열기 (규칙 27)
+        onTripCreated?.();
+        onNewSession?.(null, tripId);
+      } catch (e) {
+        console.error('[Home] 여행 계획 생성 실패:', e);
+      }
+    };
 
     container.querySelector('.trip-card-new').addEventListener('click', openModal);
     overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });

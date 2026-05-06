@@ -27,11 +27,12 @@ export const ChatManager = {
 
     let isNewSession = false;
     if (!state.currentSessionId) {
-      const effectiveTripId = state.currentTripId === 'none' ? null : (state.currentTripId || null);
-      const session = await BackendHooks.createSession(text, 'personal', effectiveTripId);
+      const effectiveTripId = state.currentTripId === 'misc' ? null : (state.currentTripId || null);
+      const session = await BackendHooks.createSession(text, effectiveTripId);
       const sid = session.id || session.session_id;
       state.currentSessionId = sid;
-      state.currentSessionMode = 'personal';
+      // 새 세션은 혼자이므로 participant_count=1 기본값 적용
+      session.participant_count = session.participant_count || 1;
       SessionManager.renderSidebarItem(session, elements, state, true);
       isNewSession = true;
     }
@@ -43,7 +44,7 @@ export const ChatManager = {
 
     const myNickname = TokenManager.getNickname();
     const myId = TokenManager.getUserId();
-    const isTeam = (state.currentSessionMode === 'team');
+    const isTeam = (state.currentParticipantCount || 1) > 1;
     appendMessage(chatHistory, text, 'user', {
       senderName: myNickname,
       senderId: myId,
@@ -53,11 +54,46 @@ export const ChatManager = {
     chatInput.value = '';
     adjustTextareaHeight(chatInput, chatBox);
 
-    // 모든 일반 세션은 AI 없이 즉시 DB 저장
+    // 백엔드가 @BOT 여부를 판단 — 응답이 있으면 봇 버블로 표시
+    // 인디케이터는 봇 호출이 실제로 트리거되는 경우(@BOT)에만 표시
+    let botMsgDiv = null;
+    const willCallBot = /^@BOT\s+/i.test(text);
+    const loadingId = willCallBot ? showLoadingIndicator(chatHistory) : null;
+    if (willCallBot) chatHistory.scrollTop = chatHistory.scrollHeight;
+    let _loadingDone = false;
+    const removeLoading = () => {
+      if (_loadingDone || loadingId === null) return;
+      _loadingDone = true;
+      removeLoadingIndicator(loadingId);
+    };
+
     try {
-      await BackendHooks.sendTeamMessage(state.currentSessionId, text);
+      await BackendHooks.sendTeamMessage(
+        state.currentSessionId,
+        text,
+        (accumulated) => {
+          if (!botMsgDiv) {
+            removeLoading();
+            state.isReceiving = true;
+            appendMessage(chatHistory, accumulated, 'bot', {
+              senderName: 'AI',
+              senderId: 'bot',
+              time: new Date().toISOString(),
+              isTeam,
+            });
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            botMsgDiv = chatHistory.lastElementChild?.querySelector('.message');
+          } else {
+            botMsgDiv.textContent = accumulated;
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+          }
+        },
+        () => { removeLoading(); state.isReceiving = false; }
+      );
     } catch (error) {
+      removeLoading();
       console.error('Error in handleSend:', error);
+      state.isReceiving = false;
     }
   },
 
@@ -70,14 +106,14 @@ export const ChatManager = {
       state.tempSessionId = 'tmp_' + Math.random().toString(36).slice(2, 10);
     }
 
-    // 첫 메시지 → hero 숨기고 일반 채팅뷰로 전환 (임시채팅 전용 버튼은 숨김 유지)
-    if (chatHistory.children.length === 0) {
-      switchView('chat', elements);
-      if (elements.downloadChatBtn) elements.downloadChatBtn.style.display = 'none';
-      if (elements.shareChatBtn)    elements.shareChatBtn.style.display    = 'none';
-      if (elements.mapToggleBtn)    elements.mapToggleBtn.style.display    = 'none';
-      if (elements.sessionInfoBtn)  elements.sessionInfoBtn.style.display  = 'none';
-    }
+    // 전용 안내 화면을 숨기고 채팅뷰로 전환
+    if (elements.heroSection) elements.heroSection.style.display = 'none';
+    chatHistory.style.display = 'flex';
+    if (elements.chatWrap) elements.chatWrap.style.display = 'block';
+    if (elements.downloadChatBtn) elements.downloadChatBtn.style.display = 'none';
+    if (elements.shareChatBtn)    elements.shareChatBtn.style.display    = 'none';
+    if (elements.mapToggleBtn)    elements.mapToggleBtn.style.display    = 'none';
+    if (elements.sessionInfoBtn)  elements.sessionInfoBtn.style.display  = 'none';
 
     const myNickname = TokenManager.getNickname() || 'Me';
     appendMessage(chatHistory, text, 'user', {
@@ -90,32 +126,47 @@ export const ChatManager = {
     adjustTextareaHeight(chatInput, chatBox);
     chatHistory.scrollTop = chatHistory.scrollHeight;
 
+    // @BOT 없으면 로컬 버블만 표시하고 종료
+    const botMatch = text.match(/^@BOT\s+([\s\S]+)/i);
+    if (!botMatch) return;
+
+    const botQuery = botMatch[1].trim();
     state.isReceiving = true;
 
-    // 봇 메시지 자리 확보 (빈 메시지로 먼저 append)
-    appendMessage(chatHistory, '...', 'bot', {
-      senderName: 'AI',
-      senderId: 'ai',
-      time: new Date().toISOString(),
-      isTeam: false,
-    });
+    const loadingId = showLoadingIndicator(chatHistory);
     chatHistory.scrollTop = chatHistory.scrollHeight;
-    const botRow = chatHistory.lastElementChild;
-    const botMsgDiv = botRow?.querySelector('.message');
+    let _loadingDone = false;
+    const removeLoading = () => { if (!_loadingDone) { _loadingDone = true; removeLoadingIndicator(loadingId); } };
+    let botMsgDiv = null;
 
     try {
       await BackendHooks.sendTempMessage(
         state.tempSessionId,
-        text,
+        botQuery,
         (accumulated) => {
-          if (botMsgDiv) botMsgDiv.textContent = accumulated;
+          if (!botMsgDiv) {
+            removeLoading();
+            appendMessage(chatHistory, accumulated, 'bot', {
+              senderName: 'AI',
+              senderId: 'ai',
+              time: new Date().toISOString(),
+              isTeam: false,
+            });
+            botMsgDiv = chatHistory.lastElementChild?.querySelector('.message');
+          } else {
+            botMsgDiv.textContent = accumulated;
+          }
           chatHistory.scrollTop = chatHistory.scrollHeight;
         },
-        () => { state.isReceiving = false; }
+        () => { removeLoading(); state.isReceiving = false; }
       );
     } catch (e) {
+      removeLoading();
       console.error('[tempChat]', e);
-      if (botMsgDiv) botMsgDiv.textContent = '오류가 발생했습니다.';
+      appendMessage(chatHistory, '오류가 발생했습니다.', 'bot', {
+        senderName: 'AI', senderId: 'ai',
+        time: new Date().toISOString(), isTeam: false,
+      });
       state.isReceiving = false;
     }
   },
@@ -130,7 +181,7 @@ export const ChatManager = {
 
     const myNickname = TokenManager.getNickname();
     const myId = TokenManager.getUserId();
-    const isTeamMode = (state.currentSessionMode || state.currentMode) === 'team';
+    const isTeamMode = (state.currentParticipantCount || 1) > 1;
 
     Array.from(files).forEach(file => {
       if (file.type.startsWith('image/') || file.type.startsWith('video/')) {
@@ -182,7 +233,7 @@ export const ChatManager = {
       const textBefore = val.slice(0, cursor);
       const match = textBefore.match(/@(\S*)$/);
 
-      if (!match || state.currentSessionMode !== 'team') {
+      if (!match) {
         closeDropdown();
         return;
       }
@@ -192,9 +243,10 @@ export const ChatManager = {
       // 세션 참여자 목록 캐시 (세션 변경 또는 30초 경과 시 재조회)
       const _now = Date.now();
       if (
-        !_sessionParticipants._sid ||
-        _sessionParticipants._sid !== state.currentSessionId ||
-        (_now - (_sessionParticipants._ts || 0)) > 30000
+        state.currentSessionId &&
+        (!_sessionParticipants._sid ||
+         _sessionParticipants._sid !== state.currentSessionId ||
+         (_now - (_sessionParticipants._ts || 0)) > 30000)
       ) {
         try {
           const res = await BackendHooks._authFetch(`/api/sessions/${state.currentSessionId}/info`);
@@ -208,10 +260,15 @@ export const ChatManager = {
       }
 
       const myId = TokenManager.getUserId();
-      const filtered = _sessionParticipants.filter(p =>
+      const humanFiltered = _sessionParticipants.filter(p =>
         p.user_id !== myId &&
         (p.nickname || p.user_id).toLowerCase().includes(query.toLowerCase())
       );
+
+      // BOT은 항상 @mention 후보에 포함
+      const botEntry = { user_id: 'bot', nickname: 'BOT' };
+      const botVisible = 'bot'.startsWith(query.toLowerCase()) || query === '';
+      const filtered = botVisible ? [botEntry, ...humanFiltered] : humanFiltered;
 
       closeDropdown();
       if (!filtered.length) return;

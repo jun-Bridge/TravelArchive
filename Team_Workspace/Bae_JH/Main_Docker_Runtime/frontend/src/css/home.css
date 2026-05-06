@@ -121,6 +121,35 @@
   transition: box-shadow 0.22s ease;   /* transform·opacity는 JS가 직접 설정 */
 }
 
+/* 여행 카드 삭제 버튼 */
+.trip-card-delete-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.12);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 10;
+}
+.trip-card:hover .trip-card-delete-btn,
+.trip-card.is-hovered .trip-card-delete-btn {
+  opacity: 1;
+}
+.trip-card-delete-btn:hover {
+  background: rgba(220,38,38,0.75);
+}
+
 /* hover — JS가 is-hovered 클래스 관리 */
 .trip-card.is-hovered {
   box-shadow:

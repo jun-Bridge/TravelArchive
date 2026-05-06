@@ -109,45 +109,74 @@ class Router:
         title      = first_message[:20] + "..." if len(first_message) > 20 else first_message
         today      = date.today().isoformat()
 
-        # 세션은 항상 personal로 생성 (초대 수락 시 자동으로 team으로 전환)
         from ..loader.loader import Loader
+
+        # trip_id 없으면 기타 trip에 귀속
+        if not trip_id:
+            trip_id = await Loader.ensure_misc_trip(postgres, user_id)
+
         await Loader.create_session_record(postgres, session_id, user_id, {
             "title":   title,
             "trip_id": trip_id,
-            "mode":    "personal",
         })
 
-        # trip_id가 있으면 trip color 조회
+        # trip color 조회
         trip_color = None
-        if trip_id:
-            trips = await Loader.get_trip_list(postgres, user_id)
-            for t in trips:
-                if t.get("trip_id") == trip_id:
-                    trip_color = t.get("color")
-                    break
+        trips = await Loader.get_trip_list(postgres, user_id)
+        for t in trips:
+            if t.get("trip_id") == trip_id:
+                trip_color = t.get("color")
+                break
 
         return {
-            "id":          session_id,
-            "title":       title,
-            "mode":        "personal",
-            "trip_id":     trip_id,
-            "trip_color":  trip_color,
-            "user_id":     user_id,
-            "created_at":  today,
+            "id":                session_id,
+            "title":             title,
+            "trip_id":           trip_id,
+            "trip_color":        trip_color,
+            "user_id":           user_id,
+            "created_at":        today,
+            "participant_count": 1,
+            "user_role":         "master",
         }
 
-    # ── 세션 삭제 ────────────────────────────────────────────
+    # ── 세션 탈퇴 (팀원 본인) ────────────────────────────────
+
+    @staticmethod
+    async def leave_session(session_id: str, user_id: str, postgres, redis) -> dict:
+        """비마스터 팀원이 본인 탈퇴."""
+        from ..loader.loader import Loader
+        await Loader.leave_session(postgres, session_id, user_id)
+        await SessionCache.unmark_active(user_id, session_id, redis)
+        return {"success": True}
+
+    # ── 세션 탈퇴 (마스터) ──────────────────────────────────
 
     @staticmethod
     async def delete_session(session_id: str, user_id: str,
                               postgres, redis) -> dict:
+        """
+        마스터가 세션에서 나감.
+        - 팀원이 있으면 가장 오래된 팀원이 마스터 승계, SSE로 new_master 이벤트 전송.
+        - 팀원이 없으면 세션 삭제(비활성화).
+        """
         from ..loader.loader import Loader
-        result = await Loader.leave_or_delete_session(postgres, session_id, user_id)
+        result = await Loader.leave_as_master(postgres, session_id, user_id)
 
         await SessionCache.unmark_active(user_id, session_id, redis)
 
-        if result.get("deleted"):
-            # 실제 세션 삭제 시에만 컨테이너/캐시 정리
+        if result["deleted"]:
+            # 아무도 없어서 세션 삭제 — SSE 큐에 kicked 전송 (혹시 남은 연결 있다면)
+            kicked_event = json.dumps({
+                "type":       "kicked",
+                "session_id": session_id,
+                "reason":     "session_deleted",
+            }, ensure_ascii=False)
+            for q in list(_session_sse_queues.get(session_id, [])):
+                try:
+                    q.put_nowait(kicked_event)
+                except asyncio.QueueFull:
+                    pass
+
             if session_id in _active_sessions:
                 try:
                     await _active_sessions[session_id].teardown()
@@ -155,8 +184,52 @@ class Router:
                     pass
                 del _active_sessions[session_id]
             await FlushService.flush_single_session(session_id, postgres, redis)
+        else:
+            # 마스터 승계 — 새 마스터 ID를 SSE로 알림
+            new_master_event = json.dumps({
+                "type":       "new_master",
+                "session_id": session_id,
+                "user_id":    result["new_master"],
+            }, ensure_ascii=False)
+            for q in list(_session_sse_queues.get(session_id, [])):
+                try:
+                    q.put_nowait(new_master_event)
+                except asyncio.QueueFull:
+                    pass
 
-        return {"success": True, "deleted": result.get("deleted", False)}
+        return {"success": True, "deleted": result["deleted"]}
+
+    # ── 개인 전환 (마스터 전용) ──────────────────────────────
+
+    @staticmethod
+    async def convert_to_personal(session_id: str, user_id: str,
+                                   postgres, redis) -> dict:
+        """마스터 전용: 팀원 전원 퇴장 후 개인 세션으로 전환(참여자 수 = 1)."""
+        from ..loader.loader import Loader
+        from fastapi import HTTPException
+        role = await Loader.get_session_role(postgres, session_id, user_id)
+        if role != "master":
+            raise HTTPException(status_code=403, detail="마스터만 개인 전환을 할 수 있습니다")
+
+        # 팀원에게 kicked 이벤트 브로드캐스트
+        kicked_event = json.dumps({
+            "type":       "kicked",
+            "session_id": session_id,
+            "reason":     "master_converted_to_personal",
+        }, ensure_ascii=False)
+        for q in list(_session_sse_queues.get(session_id, [])):
+            try:
+                q.put_nowait(kicked_event)
+            except asyncio.QueueFull:
+                pass
+
+        # DB에서 마스터 외 전원 제거
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": "DELETE FROM session_participants WHERE session_id = :sid AND role NOT IN ('master', 'bot')",
+            "params": {"sid": session_id},
+        })
+        return {"success": True}
 
     # ── 세션 제목 변경 ────────────────────────────────────────
 
@@ -194,49 +267,6 @@ class Router:
                 pass
 
         return {"success": True, "title": title}
-
-    # ── 세션 모드 변경 ────────────────────────────────────────
-
-    @staticmethod
-    async def update_session_mode(session_id: str, mode: str, user_id: str,
-                                   postgres, redis) -> dict:
-        from ..loader.loader import Loader
-        from fastapi import HTTPException
-        # 개인 전환은 마스터만 가능
-        if mode == "personal":
-            role = await Loader.get_session_role(postgres, session_id, user_id)
-            if role != "master":
-                raise HTTPException(status_code=403, detail="마스터만 개인 플래너로 전환할 수 있습니다")
-        await Loader.update_session_record(postgres, session_id, {"mode": mode})
-
-        # Redis 메타 갱신 (send_message 모드 분기가 최신 값을 읽도록)
-        meta = await SessionCache.get_session_meta(session_id, redis) or {}
-        meta["mode"] = mode
-        await SessionCache.cache_session_meta(session_id, meta, redis)
-
-        # 팀 → 개인 전환: 구성원에게 kicked 이벤트 브로드캐스트 후 DB에서 제거
-        if mode == "personal":
-            kicked_event = json.dumps({
-                "type":       "kicked",
-                "session_id": session_id,
-                "reason":     "master_converted_to_personal",
-            }, ensure_ascii=False)
-            for q in list(_session_sse_queues.get(session_id, [])):
-                try:
-                    q.put_nowait(kicked_event)
-                except asyncio.QueueFull:
-                    pass
-
-            await postgres.execute({
-                "action": "raw_sql",
-                "sql": """
-                    DELETE FROM session_participants
-                    WHERE session_id = :sid AND role != 'master'
-                """,
-                "params": {"sid": session_id},
-            })
-
-        return {"success": True, "mode": mode}
 
     # ── 세션 색상 변경 ───────────────────────────────────────
 
@@ -369,13 +399,92 @@ class Router:
                         "session_id":  session_id,
                     })
 
+        # ── @BOT 감지: LLM 응답 스트리밍 ──────────────────────
+        import re as _re2
+        bot_match = _re2.match(r'^@BOT\s+([\s\S]+)', message, _re2.IGNORECASE)
+        if bot_match:
+            bot_query = bot_match.group(1).strip()
+            return await Router._stream_bot_response(session_id, bot_query, postgres, user_id)
+
         async def _ack():
-            yield message
+            yield b''
 
         return StreamingResponse(_ack(), media_type="text/plain")
 
     # 하위 호환: facade.py의 team-message 엔드포인트에서 참조
     _handle_team_message = _handle_session_message
+
+    @staticmethod
+    async def _stream_bot_response(session_id: str, query: str, postgres,
+                                    triggering_user_id: str = None) -> StreamingResponse:
+        """LLM을 호출해 응답을 스트리밍하고, DB 저장 + SSE 브로드캐스트.
+        triggering_user_id의 SSE 큐는 건너뜀 (HTTP 스트림으로 이미 수신)."""
+        from ..test_agent import TestNode
+        from setting.config import LLM_MODEL_GENERATION, GENERATION_API_KEY, GENERATION_PROMPT
+
+        # 최근 대화 컨텍스트 (최대 10건)
+        hr = await postgres.execute({
+            "action": "raw_sql",
+            "sql": "SELECT sender_type, content FROM conversations WHERE session_id = :sid ORDER BY created_at DESC LIMIT 10",
+            "params": {"sid": session_id},
+        })
+        recent = list(reversed(hr.get("data", [])))
+        past_chat = "\n".join(
+            ("사용자" if m["sender_type"] == "user" else "AI") + ": " + m["content"]
+            for m in recent
+        ) or "최근 대화 내역 없음"
+
+        prompt = GENERATION_PROMPT.format(
+            p_topic="",
+            s_topic="여행 대화",
+            s_context="",
+            past_chat_history=past_chat,
+            current_msg_content=query,
+        )
+        node = TestNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)
+
+        async def _stream():
+            bot_text = await node.ask(prompt)
+
+            # DB 저장
+            bot_now    = datetime.now(tz=timezone.utc)
+            bot_msg_id = "msg_" + str(uuid.uuid4())[:12]
+            await postgres.execute({
+                "action": "create", "model": "Conversation",
+                "data": {
+                    "message_id":   bot_msg_id,
+                    "session_id":   session_id,
+                    "sender_id":    None,
+                    "sender_type":  "ai",
+                    "message_type": "text",
+                    "content":      bot_text,
+                    "created_at":   bot_now,
+                },
+            })
+
+            # SSE 브로드캐스트 — 트리거한 유저의 큐는 제외 (이미 HTTP 스트림으로 수신 중)
+            sse_event = json.dumps({
+                "type":        "message",
+                "sender_id":   "bot",
+                "sender_name": "AI",
+                "content":     bot_text,
+                "msg_id":      bot_msg_id,
+                "ts":          bot_now.isoformat(),
+            }, ensure_ascii=False)
+            for q in list(_session_sse_queues.get(session_id, [])):
+                if triggering_user_id and _queue_to_user.get(id(q)) == triggering_user_id:
+                    continue
+                try:
+                    q.put_nowait(sse_event)
+                except asyncio.QueueFull:
+                    pass
+
+            # 문자 단위 스트리밍
+            for char in bot_text:
+                yield char.encode()
+                await asyncio.sleep(0.02)
+
+        return StreamingResponse(_stream(), media_type="text/plain")
 
     # ── 타이핑 인디케이터 (비활성화) ─────────────────────────
 
@@ -465,14 +574,7 @@ class Router:
         from ..loader.loader import Loader
         msgs = await Loader.get_conversation_history(postgres, session_id,
                                                      limit=limit, offset=offset)
-        # 세션 모드 조회 (프론트가 SSE 여부 판단에 사용)
-        r = await postgres.execute({
-            "action": "raw_sql",
-            "sql": 'SELECT "mode" FROM sessions WHERE session_id = :sid',
-            "params": {"sid": session_id},
-        })
-        session_mode = (r.get("data") or [{}])[0].get("mode", "personal")
-        return {"messages": msgs, "mode": session_mode}
+        return {"messages": msgs}
 
     # ── 대화 다운로드 ────────────────────────────────────────
 

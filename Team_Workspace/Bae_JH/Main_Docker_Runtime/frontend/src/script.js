@@ -120,22 +120,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   const state = {
     currentSessionId: null,
     isReceiving: false,
-    currentMode: 'personal', // 'personal' or 'team'
-    currentTripId: null,     // null = 전체, 'none' = 기타, 'trip_xxx' = 특정 여행
+    currentParticipantCount: null,
+    currentTripId: null,     // null = 전체, 'misc' = 기타, 'trip_xxx' = 특정 여행
     isTempMode: false,       // 임시 채팅 모드 (로그인 후 임시 채팅 사용 시)
   };
 
   // 홈 대시보드 "+" 카드 클릭 → 첫 메시지 입력 후 세션 생성 + 자동 전송
-  elements._onNewSession = async (firstMsg) => {
+  elements._onNewSession = async (firstMsg, tripId) => {
     if (state.isReceiving || state.isTempMode) return;
     try {
       const title = firstMsg || '새 대화';
-      const effectiveTripId = state.currentTripId === 'none' ? null : state.currentTripId;
-      const session = await BackendHooks.createSession(
-        title, 'personal', effectiveTripId
-      );
+      const resolvedTripId = tripId !== undefined ? tripId : state.currentTripId;
+      const effectiveTripId = resolvedTripId === 'misc' ? null : resolvedTripId;
+      const session = await BackendHooks.createSession(title, effectiveTripId);
       const sid = session.id || session.session_id;
       SessionManager.renderSidebarItem(session, elements, state, true);
+      initTripDropdown();  // 기타 trip이 새로 생성됐을 수 있으므로 드롭다운 갱신
       window.location.hash = `#/chat/${sid}`;
 
       if (firstMsg) {
@@ -153,12 +153,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 사이드바 세션 목록 재조회
   elements._refreshSessions = () => SessionManager.init(elements, state);
 
+  // 홈 화면에서 여행 계획 생성 후 드롭다운 + 홈 카드 갱신
+  elements._onTripCreated = async () => {
+    await initTripDropdown();
+    if (elements.homeDashboard && elements.homeDashboard.style.display !== 'none') {
+      const { HomeManager } = await import('./js/home.js');
+      HomeManager.render(elements.homeDashboard, elements._onNewSession, elements._onTripSelect, elements._onTripCreated);
+    }
+  };
+
   // 여행 카드 클릭 → 현재 여행 필터 변경 + 세션 목록 갱신
   elements._onTripSelect = (tripId, tripTitle) => {
     state.currentTripId = tripId || null;
     if (elements.planFilterLabel) {
       if (!tripId) elements.planFilterLabel.textContent = '전체';
-      else if (tripId === 'none') elements.planFilterLabel.textContent = '기타';
+      else if (tripId === 'misc') elements.planFilterLabel.textContent = '기타';
       else elements.planFilterLabel.textContent = tripTitle || '여행';
     }
     _renderTripMenu();
@@ -201,16 +210,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     planFilterMenu.appendChild(makeItem('전체', '', null, state.currentTripId === null));
 
-    for (const trip of _tripList) {
+    // is_misc=true 는 '기타' 고정 항목으로 따로 표시 — 일반 목록에 포함하지 않음
+    for (const trip of _tripList.filter(t => !t.is_misc)) {
       planFilterMenu.appendChild(
         makeItem(trip.title || '이름 없는 여행', trip.trip_id, trip.color, state.currentTripId === trip.trip_id)
       );
     }
 
-    planFilterMenu.appendChild(makeItem('기타', 'none', null, state.currentTripId === 'none'));
+    planFilterMenu.appendChild(makeItem('기타', 'misc', null, state.currentTripId === 'misc'));
 
-    if (!TokenManager.isLoggedIn()) {
+    if (TokenManager.isLoggedIn()) {
+      const addItem = document.createElement('div');
+      addItem.className = 'plan-filter-item plan-filter-add';
+      addItem.dataset.action = 'add-trip';
+      addItem.innerHTML = '<span style="font-size:15px;line-height:1;margin-right:4px;">+</span><span>새 여행 계획</span>';
+      planFilterMenu.appendChild(addItem);
+    } else {
       planFilterLabel.textContent = '전체';
+    }
+  }
+
+  async function _createTripPrompt() {
+    const name = prompt('새 여행 계획 이름을 입력하세요');
+    if (!name?.trim()) return;
+    try {
+      await BackendHooks.createTrip({ title: name.trim() });
+      await elements._onTripCreated?.();
+    } catch (e) {
+      console.error('[Trip] 생성 실패:', e);
+      alert('여행 계획 생성에 실패했습니다.');
     }
   }
 
@@ -232,7 +260,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       planFilterMenu.classList.toggle('open');
     });
 
-    planFilterMenu.addEventListener('click', (e) => {
+    planFilterMenu.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-action="add-trip"]')) {
+        planFilterMenu.classList.remove('open');
+        await _createTripPrompt();
+        return;
+      }
+
       const item = e.target.closest('.plan-filter-item');
       if (!item) return;
 
@@ -241,7 +275,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (selectedId === '') {
         planFilterLabel.textContent = '전체';
-      } else if (selectedId === 'none') {
+      } else if (selectedId === 'misc') {
         planFilterLabel.textContent = '기타';
       } else {
         planFilterLabel.textContent = _tripList.find(t => t.trip_id === selectedId)?.title || '여행';
@@ -542,9 +576,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 전송 핸들러: 비로그인 또는 임시 채팅 모드 시 임시 챗봇, 로그인 시 정상 세션 사용
+  // 전송 핸들러: 로그인 시 ChatManager.handleSend (내부에서 isTempMode 분기), 비로그인만 직접 처리
   const _handleSendOrTemp = () => {
-    if (TokenManager.isLoggedIn() && !state.isTempMode) {
+    if (TokenManager.isLoggedIn()) {
       ChatManager.handleSend(state, elements);
     } else {
       const message = elements.chatInput?.value?.trim();
@@ -643,17 +677,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       const res = await BackendHooks._authFetch(`/api/sessions/${state.currentSessionId}/info`);
       if (!res.ok) return;
       const info = await res.json();
-      _showSessionInfoModal(info);
+      await _showSessionInfoModal(info);
     } catch (e) { console.error(e); }
   });
 
-  function _showSessionInfoModal(info) {
+  async function _showSessionInfoModal(info) {
     const existing = document.getElementById('session-info-modal');
     if (existing) existing.remove();
 
     const modal = document.createElement('div');
     modal.id = 'session-info-modal';
     modal.className = 'modal-overlay show';
+
+    const myId = TokenManager.getUserId();
+    const isMaster = (info.participants || []).some(p => p.user_id === myId && p.role === 'master');
 
     const participants = (info.participants || []).map(p => `
       <div class="session-info-participant">
@@ -664,7 +701,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tripDot = info.trip_color ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${info.trip_color};margin-right:6px;vertical-align:middle;"></span>` : '';
     const tripDisplay = info.trip_title
       ? `${tripDot}${info.trip_title}`
-      : '<span style="color:var(--text-secondary,#9ca3af)">단독 세션</span>';
+      : '<span style="color:var(--text-secondary,#9ca3af)">기타</span>';
+
+    // 소속 계획 변경 — 마스터만
+    let tripChangeHTML = '';
+    let trips = [];
+    if (isMaster) {
+      try { trips = (await BackendHooks.fetchTripList()).filter(t => !t.is_misc); } catch {}
+      const opts = trips.map(t =>
+        `<option value="${t.trip_id}" ${info.trip_id === t.trip_id ? 'selected' : ''}>${t.title || '이름 없는 여행'}</option>`
+      ).join('');
+      tripChangeHTML = `
+        <div class="session-info-row" style="margin-top:8px;align-items:center;">
+          <span class="session-info-label">계획 변경</span>
+          <select id="sessionTripSelect" style="flex:1;padding:4px 8px;border-radius:6px;border:1px solid var(--border-color,#e2e8f0);background:var(--bg-secondary,#f8fafc);color:var(--text-primary,#222);font-size:13px;">
+            <option value="">기타 (미분류)</option>
+            ${opts}
+          </select>
+          <button id="sessionTripSaveBtn" style="margin-left:6px;padding:4px 10px;border-radius:6px;background:var(--accent,#2563eb);color:#fff;border:none;cursor:pointer;font-size:12px;">저장</button>
+        </div>`;
+    }
 
     modal.innerHTML = `
       <div class="modal-content" style="max-width:400px;">
@@ -674,9 +730,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
         <div>
           <div class="session-info-row"><span class="session-info-label">이름</span><span>${info.title || '-'}</span></div>
-          <div class="session-info-row"><span class="session-info-label">모드</span><span>${info.mode === 'team' ? '팀 대화' : '개인 플래너'}</span></div>
+          <div class="session-info-row"><span class="session-info-label">모드</span><span>${(info.participants || []).length > 1 ? '팀 대화' : '개인 플래너'}</span></div>
           <div class="session-info-row"><span class="session-info-label">여행</span><span>${tripDisplay}</span></div>
           <div class="session-info-row"><span class="session-info-label">생성일</span><span>${info.created_at ? info.created_at.substring(0, 10) : '-'}</span></div>
+          ${tripChangeHTML}
           <div class="session-info-section-title" style="margin-top:12px;">참여자 (${(info.participants || []).length}명)</div>
           <div class="session-info-participants">${participants || '<span style="color:var(--text-secondary,#9ca3af)">없음</span>'}</div>
         </div>
@@ -685,6 +742,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.body.appendChild(modal);
     modal.querySelector('.modal-close-btn').addEventListener('click', () => modal.remove());
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+    if (isMaster) {
+      modal.querySelector('#sessionTripSaveBtn')?.addEventListener('click', async () => {
+        const sel = modal.querySelector('#sessionTripSelect');
+        const newTripId = sel?.value || null;
+        try {
+          await BackendHooks.moveSessionToTrip(state.currentSessionId, newTripId);
+          showToast('소속 계획이 변경되었습니다.');
+          modal.remove();
+          elements._refreshSessions?.();
+        } catch { showToast('변경에 실패했습니다.'); }
+      });
+    }
   }
 
   // Window utilities

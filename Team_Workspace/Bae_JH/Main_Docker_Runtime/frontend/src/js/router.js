@@ -155,8 +155,6 @@ export async function router(state, elements) {
       state._sseConnection = null;
     }
 
-    let actualSessionMode = state.currentMode;
-
     if (state.currentSessionId !== ssid) {
       switchView('chat', elements);
       chatHistory.innerHTML = '';
@@ -171,12 +169,16 @@ export async function router(state, elements) {
       SessionManager.clearUnreadDot(ssid);
 
       try {
-        const result = await BackendHooks.fetchChatHistory(ssid, HISTORY_PAGE, 0);
-        actualSessionMode = result.mode || state.currentMode;
-        state.currentSessionMode = actualSessionMode;
+        // 히스토리와 세션 정보를 병렬로 조회
+        const [result, infoRes] = await Promise.all([
+          BackendHooks.fetchChatHistory(ssid, HISTORY_PAGE, 0),
+          BackendHooks._authFetch(`/api/sessions/${ssid}/info`).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+        const participantCount = infoRes?.participants?.length || 1;
+        state.currentParticipantCount = participantCount;
         removeLoadingIndicator(loadingId);
         const myId = TokenManager.getUserId();
-        const isTeam = actualSessionMode === 'team';
+        const isTeam = participantCount > 1;
         _renderMsgs(chatHistory, result.messages, myId, isTeam, ssid);
         chatHistory.scrollTop = chatHistory.scrollHeight;
         _attachScrollPager(chatHistory, ssid, myId, isTeam, state);
@@ -186,24 +188,25 @@ export async function router(state, elements) {
       }
     } else {
       switchView('chat', elements);
-      if (state.currentSessionMode) actualSessionMode = state.currentSessionMode;
-      if (actualSessionMode !== 'team' && chatHistory.children.length === 0) {
+      if (chatHistory.children.length === 0) {
         const loadingId2 = showLoadingIndicator(chatHistory);
         try {
           const result2 = await BackendHooks.fetchChatHistory(ssid, HISTORY_PAGE, 0);
           removeLoadingIndicator(loadingId2);
           const myId2 = TokenManager.getUserId();
-          _renderMsgs(chatHistory, result2.messages, myId2, false, ssid);
+          const isTeam2 = (state.currentParticipantCount || 1) > 1;
+          _renderMsgs(chatHistory, result2.messages, myId2, isTeam2, ssid);
           chatHistory.scrollTop = chatHistory.scrollHeight;
-          _attachScrollPager(chatHistory, ssid, myId2, false, state);
+          _attachScrollPager(chatHistory, ssid, myId2, isTeam2, state);
         } catch (e) {
           removeLoadingIndicator(loadingId2);
         }
       }
     }
 
-    // SSE는 실제 세션 모드 기준으로 시작 (사이드바 탭 무관)
-    if (actualSessionMode === 'team') {
+    // SSE는 참여자 수 기준으로 시작
+    const isTeamSession = (state.currentParticipantCount || 1) > 1;
+    if (isTeamSession) {
       const myId = TokenManager.getUserId();
       state._sseConnection = BackendHooks.subscribeToSessionEvents(
         ssid,
@@ -225,17 +228,29 @@ export async function router(state, elements) {
               }
             }
           } else if (event.type === 'kicked') {
-            // 마스터가 개인 전환 → 즉시 세션에서 퇴출
             if (state._sseConnection) {
               state._sseConnection.close();
               state._sseConnection = null;
             }
             state.currentSessionId = null;
-            state.currentSessionMode = null;
+            state.currentParticipantCount = null;
             window.location.hash = '#/';
             import('./ui.js').then(({ showToast }) =>
-              showToast('마스터가 개인 플래너로 전환하여 세션에서 나왔습니다.')
+              showToast('세션에서 퇴출되었습니다.')
             );
+          } else if (event.type === 'new_master') {
+            // 마스터 승계: 내가 새 마스터가 됐으면 UI 새로고침
+            const myId = TokenManager.getUserId();
+            if (event.user_id === myId) {
+              state.currentParticipantCount = null;
+              import('./ui.js').then(({ showToast }) =>
+                showToast('마스터 권한이 위임되었습니다.')
+              );
+              // 세션 목록 새로고침
+              import('./session.js').then(({ SessionManager }) =>
+                SessionManager.init(elements, state)
+              );
+            }
           } else if (event.type === 'title_updated') {
             // 세션 제목 실시간 반영
             import('./ui.js').then(({ updateSidebarSessionTitle }) =>
@@ -284,7 +299,7 @@ export async function router(state, elements) {
   }
 
   state.currentSessionId = null;
-  state.currentSessionMode = null;
+  state.currentParticipantCount = null;
 
   // page 경로 이탈 시 임시채팅 모드 해제 (종료버튼 외 다른 방법으로 나갈 때)
   if (page.type === 'page' && state.isTempMode) {
@@ -303,15 +318,15 @@ export async function router(state, elements) {
     switchView('home', elements);
 
     if (state.isTempMode) {
-      // 임시 채팅 모드: hereTempChat 헤더 + chatHistory 동시 표시
+      // 임시 채팅 모드: 전용 안내 화면만 표시, chatHistory는 숨김
+      // 대화 시작 시 _handleTempSend 에서 heroSection 숨기고 chatHistory 표시함
       document.getElementById('heroNormal')?.setAttribute('style', 'display:none');
       document.getElementById('hereTempChat')?.removeAttribute('style');
       if (elements.homeDashboard) {
         elements.homeDashboard.style.display = 'none';
         elements.heroSection?.classList.remove('dashboard-active');
       }
-      // switchView('home')이 chatHistory를 숨기므로 다시 열어줌
-      chatHistory.style.display = 'flex';
+      // chatHistory는 숨긴 채 유지 (대화 시작 전에는 안내 화면만 보임)
       const exitBtn = document.getElementById('exitTempChatBtn');
       if (exitBtn) {
         exitBtn.onclick = () => { elements._exitTempMode?.(); };
@@ -327,7 +342,7 @@ export async function router(state, elements) {
       if (TokenManager.isLoggedIn()) {
         elements.homeDashboard.style.display = 'block';
         elements.heroSection?.classList.add('dashboard-active');
-        HomeManager.render(elements.homeDashboard, elements._onNewSession || (() => {}), elements._onTripSelect);
+        HomeManager.render(elements.homeDashboard, elements._onNewSession || (() => {}), elements._onTripSelect, elements._onTripCreated);
         elements._refreshSessions?.();
       } else {
         elements.homeDashboard.style.display = 'none';
