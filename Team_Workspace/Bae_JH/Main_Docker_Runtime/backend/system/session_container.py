@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 # 실행 경로(sys.path) 문제 방지: backend의 상위 폴더(프로젝트 루트)를 path에 동적으로 추가하여 setting 모듈을 확실히 찾게 합니다.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
@@ -22,7 +22,7 @@ from setting.config import (
     LLM_MODEL_SUMMARY, SUMMARY_PROMPT, SUMMARY_API_KEY
 )
 
-from .test_agent import TestNode
+from ..router.test_agent import TestNode
 
 class SessionContainer:
     """
@@ -54,7 +54,10 @@ class SessionContainer:
         
         # 수동 이름 변경 여부 플래그 (요청 1 반영)
         self.is_manual_title: bool = False
-        
+
+        # flush로 past_messages가 비워져도 카운트 유지
+        self.total_user_msg_count: int = 0
+
         self.past_messages: List[Dict[str, str]] = []
         self.current_message: Optional[Dict[str, str]] = None
         
@@ -102,9 +105,12 @@ class SessionContainer:
             self.session_topic = session_data.get("topic", "새로운 대화")
             self.session_name = session_data.get("name", "새 세션")
             self.session_context = session_data.get("context", "")
-            # DB 로드 시 수동 플래그도 복구합니다.
             self.is_manual_title = session_data.get("is_manual_title", False)
-            
+
+            # 과거 대화에서 사용자 메시지 수 복구 (rename 조건 판단용)
+            history = await self.db.get_chat_history(self.session_id)
+            self.total_user_msg_count = sum(1 for m in history if m.get("role") == "user")
+
             self.past_messages = []
         
         self.current_message = None
@@ -114,55 +120,55 @@ class SessionContainer:
     # ==========================================
     # 2. 메인 파이프라인 (Ingest & Process)
     # ==========================================
+
+    async def ingest_message(self, text: str):
+        """사용자 메시지를 버퍼에 등록하고 주제 추론만 수행합니다. LLM 응답을 생성하지 않습니다."""
+        if self.current_message:
+            self.past_messages.append(self.current_message)
+
+        self.current_message = {"role": "user", "content": text}
+
+        topic_result = await self._llm_update_topic(self.current_message, self.past_messages)
+        topic_changed = (
+            self.session_topic != topic_result["topic"]
+            or self.session_name != topic_result["name"]
+        )
+        self.session_topic = topic_result["topic"]
+        self.session_name  = topic_result["name"]
+
+        if topic_changed:
+            await self.db.save_session_state(
+                self.session_id, self.session_topic, self.session_name,
+                self.session_context, self.is_manual_title
+            )
+
+        return topic_changed
+
+    async def generate_bot_response(self, query: str) -> str:
+        """@BOT 쿼리에 대한 LLM 응답을 생성하고 버퍼에 등록합니다.
+        ingest_message()가 먼저 호출되어 current_message에 user 메시지가 있다고 가정합니다."""
+        bot_text = await self._node_network_generate(
+            self.personalization_topic,
+            self.session_topic,
+            self.session_context,
+            self.past_messages,
+            self.current_message or {"role": "user", "content": query},
+        )
+
+        # current(user)를 past로 밀고 bot 응답을 current로
+        if self.current_message:
+            self.past_messages.append(self.current_message)
+        self.current_message = {"role": "bot", "content": bot_text}
+
+        await self._check_and_flush_buffer()
+        return bot_text
+
     async def process_user_input(self, text: str) -> str:
-        """사용자의 메시지를 받아 전체 사이클을 돌리는 메인 메서드입니다."""
+        """임시 세션(비로그인) 전용: 주제추론 + LLM 응답을 한 번에 처리합니다."""
         self.is_processing = True
         try:
-            print(f"[{self.session_id}] 새로운 메시지 파이프라인 가동")
-            
-            if self.current_message:
-                self.past_messages.append(self.current_message)
-
-            user_msg = {"role": "user", "content": text}
-            self.current_message = user_msg
-            print(f"[{self.session_id}] 사용자 메시지 등록: {text[:50]}...")
-
-            print(f"[{self.session_id}] _llm_update_topic 호출 시작...")
-            topic_update_result = await self._llm_update_topic(
-                self.current_message, self.past_messages
-            )
-            print(f"[{self.session_id}] _llm_update_topic 완료: {topic_update_result}")
-            
-            topic_changed = (self.session_topic != topic_update_result["topic"] or self.session_name != topic_update_result["name"])
-            self.session_topic = topic_update_result["topic"]
-            self.session_name = topic_update_result["name"]
-
-            if topic_changed:
-                await self.db.save_session_state(
-                    self.session_id, self.session_topic, self.session_name, self.session_context, self.is_manual_title
-                )
-                print(f"[{self.session_id}] 세션 상태 저장 완료")
-
-            print(f"[{self.session_id}] _node_network_generate 호출 시작...")
-            bot_response_text = await self._node_network_generate(
-                self.personalization_topic,
-                self.session_topic,
-                self.session_context,
-                self.past_messages,
-                self.current_message
-            )
-            print(f"[{self.session_id}] _node_network_generate 완료: {bot_response_text[:50]}...")
-
-            self.past_messages.append(self.current_message)
-            bot_msg = {"role": "bot", "content": bot_response_text}
-            self.current_message = bot_msg
-
-            print(f"[{self.session_id}] 버퍼 체크 시작...")
-            await self._check_and_flush_buffer()
-            print(f"[{self.session_id}] 버퍼 체크 완료")
-
-            print(f"[{self.session_id}] 모든 처리 완료. 응답: {bot_response_text[:50]}...")
-            return bot_response_text
+            await self.ingest_message(text)
+            return await self.generate_bot_response(text)
         except Exception as e:
             print(f"[{self.session_id}] ❌ process_user_input 오류: {e}")
             import traceback
@@ -219,17 +225,16 @@ class SessionContainer:
     # 4. 내부 LLM 연동 로직
     # ==========================================
     async def _llm_update_topic(self, current_msg: dict, past_msgs: List[dict]) -> dict:
-        """사용자 메시지 1번째와 지정된 k번째(rename_threshold)에만 세션 주제/이름을 유추합니다."""
-        
-        user_msg_count = sum(1 for msg in past_msgs if msg.get("role") == "user")
+        """매 사용자 메시지마다 주제/이름을 추론합니다. 수동 지정 세션은 이름만 고정."""
+
         if current_msg.get("role") == "user":
-            user_msg_count += 1
+            self.total_user_msg_count += 1
 
         suggested_name = self.session_name
         suggested_topic = self.session_topic
 
-        if user_msg_count == 1 or user_msg_count == self.rename_threshold:
-            print(f"[{self.session_id}] 사용자 입력 {user_msg_count}회 누적. 주제 갱신 LLM 가동.")
+        if True:
+            print(f"[{self.session_id}] 주제 갱신 LLM 가동. (총 {self.total_user_msg_count}번째 메시지)")
             
             history_text = ""
             for msg in past_msgs:

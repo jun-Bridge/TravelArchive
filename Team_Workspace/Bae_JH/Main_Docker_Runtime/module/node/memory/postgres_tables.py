@@ -60,6 +60,8 @@ class UserProfile(Base):
     nickname        = Column(String(50),  nullable=True)
     birthday        = Column(Date,        nullable=True)
     profile_img_url = Column(Text,        nullable=True)
+    bio             = Column(Text,        nullable=True)
+    extra_contacts  = Column(JSONB,       nullable=True)
     updated_at      = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -73,7 +75,9 @@ class UserPreferences(Base):
     schedule_density    = Column(String(20), nullable=True)
     companion_type      = Column(String(20), nullable=True)
     personalized_topics = Column(JSONB,      nullable=True)
-    ui_settings         = Column(JSONB,      nullable=True)
+    ui_settings         = Column(JSONB,      nullable=True)   # UI 전용: 투명도/테마/폰트/알림
+    style               = Column(JSONB,      nullable=True)   # AI 스타일·말투 설정
+    travel              = Column(JSONB,      nullable=True)   # 여행 스타일 설정
     updated_at          = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
 

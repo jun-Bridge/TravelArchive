@@ -327,10 +327,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('ta:login', async () => {
     applyAuthGate(true);
     state.isTempMode = false;
+
+    // 로그인 후 저장된 설정(테마·폰트·투명도) 재적용
+    try {
+      const ctx = await BackendHooks.fetchAppContext();
+      const s = ctx.settings || {};
+
+      const theme = s.theme || 'default';
+      if (theme === 'default') document.body.removeAttribute('data-theme');
+      else document.body.setAttribute('data-theme', theme);
+
+      if (s.appGlassOpacity !== undefined) {
+        document.documentElement.style.setProperty('--app-glass-opacity', s.appGlassOpacity / 100);
+      }
+
+      const fontKey  = s.appFontKey  || localStorage.getItem('appFontKey')  || 'pretendard';
+      const fontSize = s.appFontSize || localStorage.getItem('appFontSize') || 15;
+      document.documentElement.style.setProperty('--app-font-family', FONT_MAP[fontKey] || FONT_MAP.pretendard);
+      document.documentElement.style.setProperty('--app-font-size',   `${fontSize}px`);
+      localStorage.setItem('appFontKey',  fontKey);
+      localStorage.setItem('appFontSize', String(fontSize));
+    } catch { /* 무시 */ }
+
     await initTripDropdown();
     await SessionManager.init(elements, state);
     NotificationManager.startPolling(state, elements);
-    NotificationManager.startSSE(state, elements); // 실시간 알림 SSE
+    NotificationManager.startSSE(state, elements);
   });
 
   // ── 로그아웃 이벤트: account.js → script.js 브리지 ────────
@@ -376,25 +398,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   
   // 2. Initialization & Backend Config
+  const FONT_MAP = {
+    pretendard:  '"Pretendard", sans-serif',
+    noto:        '"Noto Sans KR", sans-serif',
+    'gothic-a1': '"Gothic A1", sans-serif',
+    system:      '"Apple SD Gothic Neo", "Malgun Gothic", sans-serif',
+  };
+
   let config = { currentLeftWidth: 300, currentRightWidth: 300 };
   let savedOpacity = '20';
   let savedTheme = 'default';
   let todayDate = new Date();
-  
+
   try {
     const appContext = await BackendHooks.fetchAppContext();
     const settings = appContext.settings || {};
-    
-    config.currentLeftWidth = parseInt(settings.leftSidebarCustomWidth, 10) || 300;
+
+    config.currentLeftWidth  = parseInt(settings.leftSidebarCustomWidth,  10) || 300;
     config.currentRightWidth = parseInt(settings.rightSidebarCustomWidth, 10) || 300;
     savedOpacity = settings.appGlassOpacity || '20';
-    savedTheme = settings.theme || 'default';
-    
+    savedTheme   = settings.theme || 'default';
+
     if (appContext.today) {
       todayDate = new Date(appContext.today);
     }
+
+    // 폰트 — DB 값 우선, localStorage 폴백
+    const fontKey  = settings.appFontKey  || localStorage.getItem('appFontKey')  || 'pretendard';
+    const fontSize = settings.appFontSize || localStorage.getItem('appFontSize') || 15;
+    document.documentElement.style.setProperty('--app-font-family', FONT_MAP[fontKey] || FONT_MAP.pretendard);
+    document.documentElement.style.setProperty('--app-font-size',   `${fontSize}px`);
+    localStorage.setItem('appFontKey',  fontKey);
+    localStorage.setItem('appFontSize', String(fontSize));
   } catch (e) {
     console.error('Failed to load context from backend', e);
+    // 완전 폴백: localStorage에 있는 값이라도 적용
+    const fontKey  = localStorage.getItem('appFontKey')  || 'pretendard';
+    const fontSize = localStorage.getItem('appFontSize') || 15;
+    document.documentElement.style.setProperty('--app-font-family', FONT_MAP[fontKey] || FONT_MAP.pretendard);
+    document.documentElement.style.setProperty('--app-font-size',   `${fontSize}px`);
   }
 
   document.documentElement.style.setProperty('--app-glass-opacity', savedOpacity / 100);

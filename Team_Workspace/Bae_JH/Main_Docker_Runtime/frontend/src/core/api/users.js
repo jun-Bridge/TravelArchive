@@ -25,6 +25,16 @@ export async function fetchAccountInfo() {
   }
 }
 
+export async function getMyProfile() {
+  try {
+    const res = await authFetch('/api/auth/me');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 /** 사용자 프로필 저장 (닉네임, 소개, 이메일, 추가 연락수단) */
 export async function saveUserProfile(data) {
   try {

@@ -8,8 +8,8 @@ TravelArchive 백엔드 진입점 — 프론트엔드와의 연결만 담당.
   - 게스트(GST) 개념 없음
 
 @app 라우트를 모두 정의하되 함수 본문은 두 클래스에 위임합니다.
-  Loader  (backend/loader/)  — DB 접근이 필요한 모든 작업
-  Router  (backend/router/)  — 세션·채팅·지도·메모·플래너 작업
+  Loader      (backend/loader/)  — DB 접근이 필요한 모든 작업
+  ChatService (backend/system/)  — 세션·채팅·지도·메모·플래너 작업
 """
 
 import os
@@ -34,7 +34,7 @@ from pydantic import BaseModel
 
 # ── 내부 모듈 ────────────────────────────────────────────────
 from .loader.loader import Loader
-from .router.router import Router
+from .system.chat_service import ChatService
 from .auth.dependencies import get_current_user, get_optional_user
 
 
@@ -175,7 +175,7 @@ async def send_temp_message(temp_session_id: str, req: TempMessageRequest):
     - 인증 없이 사용 가능
     - DB/Redis 저장 없음 — 새로고침 시 사라짐
     """
-    return await Router.send_temp_message(temp_session_id, req.message)
+    return await ChatService.send_temp_message(temp_session_id, req.message)
 
 
 # ============================================================
@@ -290,45 +290,67 @@ async def get_account_info(request: Request, user_id: str = Depends(get_optional
 @app.put("/api/user/profile")
 async def save_user_profile(req: UserProfileRequest, request: Request,
                              user_id: str = Depends(get_current_user)):
+    import json
     data = req.model_dump(exclude_none=True)
-    if data:
+    if not data:
+        return {"status": "success"}
+
+    profile_update: dict = {}
+    if "nickname" in data:       profile_update["nickname"]       = data["nickname"]
+    if "bio" in data:            profile_update["bio"]            = data["bio"]
+    if "extra_contacts" in data: profile_update["extra_contacts"] = json.dumps(data["extra_contacts"])
+
+    if profile_update:
+        profile_update["updated_at"] = __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
         await request.app.state.postgres.execute({
             "action": "update", "model": "UserProfile",
             "filters": {"user_id": user_id},
-            "data": {k: v for k, v in {
-                "nickname": data.get("nickname"),
-            }.items() if v is not None},
+            "data": profile_update,
         })
     return {"status": "success"}
 
 @app.put("/api/user/style")
 async def save_user_style(req: UserStyleRequest, request: Request,
                            user_id: str = Depends(get_current_user)):
+    import json
     data = req.model_dump(exclude_none=True)
-    if data:
-        await request.app.state.postgres.execute({
-            "action": "update", "model": "UserPreferences",
-            "filters": {"user_id": user_id},
-            "data": {"ui_settings": data},
-        })
+    if not data:
+        return {"status": "success"}
+
+    # user_preferences.style 컬럼에 JSONB UPSERT
+    await request.app.state.postgres.execute({
+        "action": "raw_sql",
+        "sql": """
+            INSERT INTO user_preferences (user_id, style, updated_at)
+            VALUES (:uid, CAST(:style AS jsonb), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET style = COALESCE(user_preferences.style, '{}') || CAST(:style AS jsonb),
+                updated_at = NOW()
+        """,
+        "params": {"uid": user_id, "style": json.dumps(data)},
+    })
     return {"status": "success"}
 
 @app.put("/api/user/travel")
 async def save_travel_preferences(req: UserTravelRequest, request: Request,
                                    user_id: str = Depends(get_current_user)):
+    import json
     data = req.model_dump(exclude_none=True)
-    if data:
-        update = {}
-        if "styles" in data:     update["travel_style"]     = ",".join(data["styles"])
-        if "food_prefs" in data: update["preferred_food"]   = data["food_prefs"]
-        if "pace" in data:       update["schedule_density"] = data["pace"]
-        if data:
-            update["personalized_topics"] = data
-        await request.app.state.postgres.execute({
-            "action": "update", "model": "UserPreferences",
-            "filters": {"user_id": user_id},
-            "data": update,
-        })
+    if not data:
+        return {"status": "success"}
+
+    # user_preferences.travel 컬럼에 JSONB UPSERT
+    await request.app.state.postgres.execute({
+        "action": "raw_sql",
+        "sql": """
+            INSERT INTO user_preferences (user_id, travel, updated_at)
+            VALUES (:uid, CAST(:travel AS jsonb), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET travel = COALESCE(user_preferences.travel, '{}') || CAST(:travel AS jsonb),
+                updated_at = NOW()
+        """,
+        "params": {"uid": user_id, "travel": json.dumps(data)},
+    })
     return {"status": "success"}
 
 @app.delete("/api/user/account")
@@ -341,32 +363,54 @@ async def delete_account(request: Request, user_id: str = Depends(get_current_us
     return {"status": "success", "message": "계정이 삭제되었습니다"}
 
 @app.get("/api/context")
-async def get_app_context():
-    return {
-        "today": date.today().isoformat(),
-        "settings": {
-            "appGlassOpacity":        "20",
-            "leftSidebarCustomWidth":  300,
-            "rightSidebarCustomWidth": 300,
-            "theme":                  "default",
+async def get_app_context(request: Request, user_id: str = Depends(get_optional_user)):
+    defaults = {
+        "appGlassOpacity":        "20",
+        "leftSidebarCustomWidth":  300,
+        "rightSidebarCustomWidth": 300,
+        "theme":                  "default",
+        "appFontKey":             "pretendard",
+        "appFontSize":            15,
+        "notifications": {
+            "response": False,
+            "weather":  False,
+            "festival": False,
         },
+    }
+    if user_id:
+        result = await Loader.get_settings(request.app.state.postgres, user_id)
+        saved = result.get("data", {})
+        # 최상위 스칼라 키 병합
+        for k in ("appGlassOpacity", "leftSidebarCustomWidth", "rightSidebarCustomWidth",
+                  "theme", "appFontKey", "appFontSize"):
+            if k in saved:
+                defaults[k] = saved[k]
+        # notifications 서브객체 병합
+        if isinstance(saved.get("notifications"), dict):
+            defaults["notifications"].update(saved["notifications"])
+    return {
+        "today":    date.today().isoformat(),
+        "settings": defaults,
     }
 
 @app.get("/api/settings")
 async def get_settings(request: Request, user_id: str = Depends(get_current_user)):
-    return await Loader.get_settings(user_id)
+    return await Loader.get_settings(request.app.state.postgres, user_id)
 
 @app.post("/api/settings/update")
 async def update_settings(settings: Dict[str, str], request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await Loader.update_settings(user_id, settings)
+    return await Loader.update_settings(request.app.state.postgres, user_id, settings)
 
 @app.get("/api/help")
 async def get_help_data():
     return {"status": "success", "data": "도움말 가이드라인 페이지입니다."}
 
 @app.post("/api/theme")
-async def save_theme_preference(req: ThemeRequest, user_id: str = Depends(get_optional_user)):
+async def save_theme_preference(req: ThemeRequest, request: Request,
+                                 user_id: str = Depends(get_optional_user)):
+    if user_id:
+        await Loader.update_settings(request.app.state.postgres, user_id, {"theme": req.theme})
     return {"status": "success"}
 
 @app.get("/api/weather")
@@ -446,13 +490,13 @@ async def get_session_list(request: Request,
                             plan_id: Optional[str] = None,  # 하위 호환
                             user_id: str = Depends(get_current_user)):
     effective_trip = trip_id or plan_id
-    return await Router.get_session_list(effective_trip, user_id, request.app.state.postgres)
+    return await ChatService.get_session_list(effective_trip, user_id, request.app.state.postgres)
 
 @app.post("/api/sessions")
 async def create_session(req: SessionCreateRequest, request: Request,
                           user_id: str = Depends(get_current_user)):
     effective_trip = req.trip_id or req.plan_id
-    return await Router.create_session(
+    return await ChatService.create_session(
         req.first_message, None, user_id, effective_trip,
         request.app.state.postgres, request.app.state.redis)
 
@@ -460,21 +504,21 @@ async def create_session(req: SessionCreateRequest, request: Request,
 async def delete_session(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
     """마스터 전용: 세션 삭제 (팀원 전원 kicked 후 비활성화)."""
-    return await Router.delete_session(session_id, user_id,
+    return await ChatService.delete_session(session_id, user_id,
                                         request.app.state.postgres, request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/leave")
 async def leave_session(session_id: str, request: Request,
                          user_id: str = Depends(get_current_user)):
     """팀원 전용: 본인 탈퇴."""
-    return await Router.leave_session(session_id, user_id,
+    return await ChatService.leave_session(session_id, user_id,
                                        request.app.state.postgres, request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/convert-personal")
 async def convert_to_personal(session_id: str, request: Request,
                                user_id: str = Depends(get_current_user)):
     """마스터 전용: 팀원 전원 퇴장 후 개인 세션으로 전환."""
-    return await Router.convert_to_personal(session_id, user_id,
+    return await ChatService.convert_to_personal(session_id, user_id,
                                              request.app.state.postgres,
                                              request.app.state.redis)
 
@@ -487,17 +531,17 @@ async def search_users(q: str, request: Request, user_id: str = Depends(get_curr
 async def session_events(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
     """팀 채팅 실시간 이벤트 스트림 (SSE)."""
-    return await Router.subscribe_session_events(session_id, user_id)
+    return await ChatService.subscribe_session_events(session_id, user_id)
 
 @app.post("/api/sessions/{session_id}/invite")
 async def invite_user(session_id: str, req: InviteRequest, request: Request,
                       user_id: str = Depends(get_current_user)):
-    return await Router.invite_user(session_id, req.user, user_id,
+    return await ChatService.invite_user(session_id, req.user, user_id,
                                      request.app.state.postgres)
 
 @app.post("/api/sessions/{session_id}/share")
 async def share_chat(session_id: str, user_id: str = Depends(get_current_user)):
-    return await Router.share_chat(session_id, user_id)
+    return await ChatService.share_chat(session_id, user_id)
 
 @app.get("/api/sessions/{session_id}/info")
 async def get_session_info(session_id: str, request: Request,
@@ -508,13 +552,13 @@ async def get_session_info(session_id: str, request: Request,
 @app.put("/api/sessions/{session_id}/title")
 async def update_session_title(session_id: str, req: TitleUpdateRequest,
                                 request: Request, user_id: str = Depends(get_current_user)):
-    return await Router.update_session_title(session_id, req.title, user_id,
+    return await ChatService.update_session_title(session_id, req.title, user_id,
                                               request.app.state.postgres, request.app.state.redis)
 
 @app.patch("/api/sessions/{session_id}/color")
 async def update_session_color(session_id: str, req: SessionColorUpdateRequest,
                                 request: Request, user_id: str = Depends(get_current_user)):
-    return await Router.update_session_color(session_id, req.color, user_id,
+    return await ChatService.update_session_color(session_id, req.color, user_id,
                                               request.app.state.postgres)
 
 @app.patch("/api/sessions/{session_id}/trip")
@@ -531,22 +575,21 @@ async def update_session_trip(session_id: str, req: SessionTripUpdateRequest,
 async def get_chat_history(session_id: str, request: Request,
                             limit: int = 40, offset: int = 0,
                             user_id: str = Depends(get_current_user)):
-    return await Router.get_chat_history(session_id, request.app.state.postgres,
+    return await ChatService.get_chat_history(session_id, request.app.state.postgres,
                                          limit=limit, offset=offset)
 
 @app.post("/api/sessions/{session_id}/message")
 async def send_message(session_id: str, req: MessageRequest, request: Request,
                        user_id: str = Depends(get_current_user)):
-    return await Router.send_message(session_id, req.message, user_id,
+    return await ChatService.send_message(session_id, req.message, user_id,
                                       request.app.state.postgres, request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/team-message")
 async def send_team_message(session_id: str, req: MessageRequest, request: Request,
                              user_id: str = Depends(get_current_user)):
-    """팀 채팅 전용 — AI 없이 저장 + SSE 브로드캐스트만."""
-    from .router.router import Router
-    return await Router._handle_team_message(session_id, user_id, req.message,
-                                              request.app.state.postgres)
+    return await ChatService._handle_team_message(session_id, user_id, req.message,
+                                              request.app.state.postgres,
+                                              request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/read")
 async def mark_session_read(session_id: str, request: Request,
@@ -564,12 +607,12 @@ async def mark_session_read(session_id: str, request: Request,
 async def send_typing(session_id: str, request: Request,
                       user_id: str = Depends(get_current_user)):
     """타이핑 중 이벤트를 같은 세션의 다른 구독자에게 SSE 브로드캐스트."""
-    return await Router.broadcast_typing(session_id, user_id, request.app.state.postgres)
+    return await ChatService.broadcast_typing(session_id, user_id, request.app.state.postgres)
 
 @app.get("/api/sessions/{session_id}/download")
 async def download_chat(session_id: str, request: Request,
                          user_id: str = Depends(get_current_user)):
-    return await Router.download_chat(session_id, request.app.state.postgres)
+    return await ChatService.download_chat(session_id, request.app.state.postgres)
 
 
 # ============================================================
@@ -580,7 +623,7 @@ async def download_chat(session_id: str, request: Request,
 async def upload_files(session_id: str, request: Request,
                        files: List[UploadFile] = File(...),
                        user_id: str = Depends(get_current_user)):
-    return await Router.upload_files(session_id, files, user_id, request.app.state.postgres)
+    return await ChatService.upload_files(session_id, files, user_id, request.app.state.postgres)
 
 
 # ============================================================
@@ -590,36 +633,36 @@ async def upload_files(session_id: str, request: Request,
 @app.post("/api/sessions/{session_id}/map/markers/add")
 async def add_map_marker(session_id: str, req: MapMarkerAddRequest, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await Router.add_map_marker(session_id, req.marker_id, req.lat, req.lng,
+    return await ChatService.add_map_marker(session_id, req.marker_id, req.lat, req.lng,
                                         req.title or "", user_id, request.app.state.redis)
 
 @app.delete("/api/sessions/{session_id}/map/markers/{marker_id}")
 async def delete_map_marker(session_id: str, marker_id: str, request: Request,
                              user_id: str = Depends(get_current_user)):
-    return await Router.delete_map_marker(session_id, marker_id, user_id,
+    return await ChatService.delete_map_marker(session_id, marker_id, user_id,
                                            request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/map/markers")
 async def save_map_markers(session_id: str, req: MapMarkersRequest, request: Request,
                             user_id: str = Depends(get_current_user)):
-    return await Router.save_map_markers(session_id, req.markers, user_id,
+    return await ChatService.save_map_markers(session_id, req.markers, user_id,
                                           request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/map/markers")
 async def get_map_markers(session_id: str, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await Router.get_map_markers(session_id, user_id, request.app.state.redis)
+    return await ChatService.get_map_markers(session_id, user_id, request.app.state.redis)
 
 @app.post("/api/sessions/{session_id}/map/routes")
 async def save_map_routes(session_id: str, req: MapRoutesRequest, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await Router.save_map_routes(session_id, req.marker_ids, user_id,
+    return await ChatService.save_map_routes(session_id, req.marker_ids, user_id,
                                          request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/map/routes")
 async def get_map_routes(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await Router.get_map_routes(session_id, user_id, request.app.state.redis)
+    return await ChatService.get_map_routes(session_id, user_id, request.app.state.redis)
 
 
 # ============================================================
@@ -629,13 +672,13 @@ async def get_map_routes(session_id: str, request: Request,
 @app.put("/api/sessions/{session_id}/trip_range")
 async def save_trip_range(session_id: str, req: TripRangeRequest, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await Router.save_trip_range(session_id, req.ranges, user_id,
+    return await ChatService.save_trip_range(session_id, req.ranges, user_id,
                                          request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/trip_range")
 async def get_trip_range(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await Router.get_trip_range(session_id, user_id, request.app.state.redis)
+    return await ChatService.get_trip_range(session_id, user_id, request.app.state.redis)
 
 
 # ============================================================
@@ -645,27 +688,27 @@ async def get_trip_range(session_id: str, request: Request,
 @app.put("/api/sessions/{session_id}/memo")
 async def save_memo(session_id: str, date: str, req: MemoRequest, request: Request,
                     user_id: str = Depends(get_current_user)):
-    return await Router.save_memo(session_id, date, req.memo, user_id, request.app.state.redis)
+    return await ChatService.save_memo(session_id, date, req.memo, user_id, request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/memo")
 async def get_memo(session_id: str, date: str, request: Request,
                    user_id: str = Depends(get_current_user)):
-    return await Router.get_memo(session_id, date, user_id, request.app.state.redis)
+    return await ChatService.get_memo(session_id, date, user_id, request.app.state.redis)
 
 @app.put("/api/sessions/{session_id}/plan")
 async def save_plan(session_id: str, date: str, req: PlanRequest, request: Request,
                     user_id: str = Depends(get_current_user)):
-    return await Router.save_plan(session_id, date, req.plan, user_id, request.app.state.redis)
+    return await ChatService.save_plan(session_id, date, req.plan, user_id, request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/plan")
 async def get_plan(session_id: str, date: str, request: Request,
                    user_id: str = Depends(get_current_user)):
-    return await Router.get_plan(session_id, date, user_id, request.app.state.redis)
+    return await ChatService.get_plan(session_id, date, user_id, request.app.state.redis)
 
 @app.get("/api/sessions/{session_id}/indicators")
 async def get_indicators(session_id: str, year: int, month: int, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await Router.get_indicators(session_id, year, month, user_id, request.app.state.redis)
+    return await ChatService.get_indicators(session_id, year, month, user_id, request.app.state.redis)
 
 
 # ============================================================
@@ -680,7 +723,7 @@ async def get_notifications(request: Request, user_id: str = Depends(get_current
 @app.get("/api/notifications/stream")
 async def notification_stream(user_id: str = Depends(get_current_user)):
     """사용자 전용 알림 SSE 스트림."""
-    return await Router.subscribe_user_notifications(user_id)
+    return await ChatService.subscribe_user_notifications(user_id)
 
 @app.post("/api/notifications/{notification_id}/accept")
 async def accept_notification(notification_id: str, request: Request,
@@ -738,7 +781,7 @@ async def admin_get_users(request: Request, user_id: str = Depends(_require_admi
 @app.get("/api/admin/sessions")
 async def admin_get_active_sessions(user_id: str = Depends(_require_admin)):
     """현재 메모리상 활성 세션 목록 (admin 전용)."""
-    from .router.router import _active_sessions, _session_sse_queues
+    from .system.chat_service import _active_sessions, _session_sse_queues
     return {
         "active_sessions": [
             {"session_id": sid, "sse_subscribers": len(_session_sse_queues.get(sid, []))}

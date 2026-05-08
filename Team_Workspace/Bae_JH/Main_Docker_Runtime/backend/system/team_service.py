@@ -177,8 +177,8 @@ class TeamService:
         })
         # 초대 대상에게 실시간 알림 push
         try:
-            from ..router.router import Router
-            await Router.push_notification_to_user(invitee_id, {
+            from .chat_service import ChatService
+            await ChatService.push_notification_to_user(invitee_id, {
                 "notification_id": notif_id,
                 "sub_type":        "session_invite",
                 "message":         message,

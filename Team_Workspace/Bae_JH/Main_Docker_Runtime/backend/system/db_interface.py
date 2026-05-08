@@ -98,23 +98,9 @@ class PostgresDBInterface:
     # ─────────────────────────────────────────────────────────
 
     async def append_messages(self, session_id: str, messages: List[dict]):
-        """대화 메시지를 Postgres Conversation 테이블에 저장."""
-        now = datetime.now(tz=timezone.utc)
-        for msg in messages:
-            role        = msg.get("role", "user")
-            sender_type = "user" if role == "user" else "ai"
-            await self.postgres.execute({
-                "action": "create", "model": "Conversation",
-                "data": {
-                    "message_id":   "msg_" + str(uuid.uuid4())[:12],
-                    "session_id":   session_id,
-                    "sender_id":    self.user_id if sender_type == "user" else None,
-                    "sender_type":  sender_type,
-                    "message_type": "text",
-                    "content":      msg.get("content", ""),
-                    "created_at":   now,
-                },
-            })
+        """버퍼 flush 시 호출. user/bot 모두 건너뜀 — 이미 각자 저장 경로에서 처리됨.
+        향후 오프라인 버퍼 등 저장이 필요한 경우를 위해 인터페이스 유지."""
+        pass
 
     # ─────────────────────────────────────────────────────────
     # 세션 상태 저장

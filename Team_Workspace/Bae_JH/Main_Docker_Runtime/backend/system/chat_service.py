@@ -1,9 +1,6 @@
 """
-router.py
-세션과 관련된 모든 로직.
-
-facade.py 의 각 라우트 함수가 직접 구현 대신 이 클래스를 호출합니다.
-  Router.*  — 세션 생명주기, 메시지, 지도, 메모, 플래너, 파일 등 모든 세션 작업
+chat_service.py
+세션 생명주기, 메시지, 지도, 메모, 플래너, SSE 등 챗봇 시스템 구성 로직.
 
 데이터 저장 구조:
   - 세션 메타/대화 기록  → Postgres (Sessions, Conversations 테이블)
@@ -22,10 +19,10 @@ from typing import Dict, List, Optional
 from fastapi import UploadFile
 from fastapi.responses import StreamingResponse, PlainTextResponse
 
-from ..session_container import SessionContainer
-from ..system.db_interface import PostgresDBInterface
-from ..system.session_cache import SessionCache
-from ..system.flush_service import FlushService
+from .session_container import SessionContainer
+from .db_interface import PostgresDBInterface
+from .session_cache import SessionCache
+from .flush_service import FlushService
 
 
 # ── 인메모리 SessionContainer 풀 ────────────────────────────
@@ -58,7 +55,7 @@ class _MockDB:
 # Router
 # ============================================================
 
-class Router:
+class ChatService:
 
     # ── 비로그인 임시 챗봇 ──────────────────────────────────
 
@@ -291,18 +288,35 @@ class Router:
     async def share_chat(session_id: str, user_id: str) -> dict:
         return {"success": True, "share_url": f"/share/{session_id}"}
 
+    # ── SessionContainer 풀 관리 ─────────────────────────────
+
+    @staticmethod
+    async def _get_or_create_container(session_id: str, user_id: str,
+                                        postgres, redis) -> "SessionContainer":
+        """_active_sessions에서 컨테이너를 가져오거나 새로 생성합니다."""
+        if session_id not in _active_sessions:
+            db_iface = PostgresDBInterface(postgres, redis, user_id=user_id)
+            container = SessionContainer(
+                session_id=session_id,
+                user_id=user_id,
+                db_interface=db_iface,
+            )
+            await container.initialize_session(is_new=False)
+            _active_sessions[session_id] = container
+        return _active_sessions[session_id]
+
     # ── 메시지 전송 ──────────────────────────────────────────
 
     @staticmethod
     async def send_message(session_id: str, message: str, user_id: str,
                             postgres, redis) -> StreamingResponse:
-        """모든 세션(개인/팀)에서 AI 없이 메시지 저장 + 팀일 때만 SSE 브로드캐스트."""
-        return await Router._handle_session_message(session_id, user_id, message, postgres)
+        """모든 세션(개인/팀): 메시지 저장 + 주제추론. @BOT이면 LLM 응답 스트리밍."""
+        return await ChatService._handle_session_message(session_id, user_id, message, postgres, redis)
 
     @staticmethod
     async def _handle_session_message(session_id: str, user_id: str,
-                                       message: str, postgres) -> StreamingResponse:
-        """모든 세션: AI 없이 메시지 DB 저장. 팀 세션은 SSE 브로드캐스트 + 미열람자 알림."""
+                                       message: str, postgres, redis=None) -> StreamingResponse:
+        """모든 세션: 메시지 DB 저장 + SessionContainer 주제추론. 팀은 SSE 브로드캐스트."""
         now    = datetime.now(tz=timezone.utc)
         msg_id = "msg_" + str(uuid.uuid4())[:12]
 
@@ -330,7 +344,7 @@ class Router:
         # 세션 참여자 목록 (발신자 제외)
         pr = await postgres.execute({
             "action": "raw_sql",
-            "sql": "SELECT user_id FROM session_participants WHERE session_id = :sid AND user_id != :uid",
+            "sql": "SELECT user_id FROM session_participants WHERE session_id = :sid AND user_id != :uid AND user_id != 'bot'",
             "params": {"sid": session_id, "uid": user_id},
         })
         other_participants = [r["user_id"] for r in pr.get("data", [])]
@@ -363,7 +377,7 @@ class Router:
                                 "created_at":      now,
                             },
                         })
-                        await Router.push_notification_to_user(target_uid, {
+                        await ChatService.push_notification_to_user(target_uid, {
                             "sub_type":   "mention",
                             "message":    f"{sender_name}님이 '@{mention_nick}'님을 언급했습니다",
                             "session_id": session_id,
@@ -393,58 +407,85 @@ class Router:
             }
             for other_uid in other_participants:
                 if other_uid not in viewing_user_ids:
-                    await Router.push_notification_to_user(other_uid, {
+                    await ChatService.push_notification_to_user(other_uid, {
                         "sub_type":    "new_message",
                         "message":     f"{sender_name}: {message[:50]}",
                         "session_id":  session_id,
                     })
 
-        # ── @BOT 감지: LLM 응답 스트리밍 ──────────────────────
+        # ── 개인 세션(마스터 혼자)이면 자동 @BOT ────────────────
         import re as _re2
+        if not is_team:
+            bot_query = _re2.sub(r'^@BOT\s+', '', message, flags=_re2.IGNORECASE).strip()
+            return await ChatService._stream_bot_response(session_id, bot_query, message, user_id, postgres, redis)
+
+        # ── 팀 세션: 명시적 @BOT 감지 ───────────────────────────
         bot_match = _re2.match(r'^@BOT\s+([\s\S]+)', message, _re2.IGNORECASE)
         if bot_match:
             bot_query = bot_match.group(1).strip()
-            return await Router._stream_bot_response(session_id, bot_query, postgres, user_id)
+            return await ChatService._stream_bot_response(session_id, bot_query, message, user_id, postgres, redis)
+
+        # ── 팀 세션 일반 메시지: 주제 추론만 백그라운드 실행 ─────
+        if redis:
+            asyncio.create_task(
+                ChatService._run_ingest(session_id, user_id, message, postgres, redis)
+            )
 
         async def _ack():
             yield b''
 
         return StreamingResponse(_ack(), media_type="text/plain")
 
-    # 하위 호환: facade.py의 team-message 엔드포인트에서 참조
-    _handle_team_message = _handle_session_message
+    _handle_team_message = _handle_session_message  # facade.py 하위 호환용
 
     @staticmethod
-    async def _stream_bot_response(session_id: str, query: str, postgres,
-                                    triggering_user_id: str = None) -> StreamingResponse:
-        """LLM을 호출해 응답을 스트리밍하고, DB 저장 + SSE 브로드캐스트.
-        triggering_user_id의 SSE 큐는 건너뜀 (HTTP 스트림으로 이미 수신)."""
-        from ..test_agent import TestNode
-        from setting.config import LLM_MODEL_GENERATION, GENERATION_API_KEY, GENERATION_PROMPT
+    async def _run_ingest(session_id: str, user_id: str, message: str, postgres, redis):
+        """백그라운드에서 SessionContainer에 메시지를 등록하고 주제를 추론합니다."""
+        try:
+            container = await ChatService._get_or_create_container(session_id, user_id, postgres, redis)
+            title_changed = await container.ingest_message(message)
+            if title_changed:
+                # 제목 변경 SSE 브로드캐스트
+                event_data = json.dumps({
+                    "type":       "title_updated",
+                    "session_id": session_id,
+                    "title":      container.session_name,
+                }, ensure_ascii=False)
+                for q in list(_session_sse_queues.get(session_id, [])):
+                    try:
+                        q.put_nowait(event_data)
+                    except asyncio.QueueFull:
+                        pass
+        except Exception as e:
+            print(f"[ChatService._run_ingest] {session_id} 오류: {e}")
 
-        # 최근 대화 컨텍스트 (최대 10건)
-        hr = await postgres.execute({
-            "action": "raw_sql",
-            "sql": "SELECT sender_type, content FROM conversations WHERE session_id = :sid ORDER BY created_at DESC LIMIT 10",
-            "params": {"sid": session_id},
-        })
-        recent = list(reversed(hr.get("data", [])))
-        past_chat = "\n".join(
-            ("사용자" if m["sender_type"] == "user" else "AI") + ": " + m["content"]
-            for m in recent
-        ) or "최근 대화 내역 없음"
-
-        prompt = GENERATION_PROMPT.format(
-            p_topic="",
-            s_topic="여행 대화",
-            s_context="",
-            past_chat_history=past_chat,
-            current_msg_content=query,
-        )
-        node = TestNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)
+    @staticmethod
+    async def _stream_bot_response(session_id: str, query: str, full_message: str,
+                                    triggering_user_id: str, postgres, redis) -> StreamingResponse:
+        """ingest(주제추론) → generate(LLM응답) 순서로 처리하고 DB 저장 + SSE 브로드캐스트."""
 
         async def _stream():
-            bot_text = await node.ask(prompt)
+            try:
+                container = await ChatService._get_or_create_container(
+                    session_id, triggering_user_id, postgres, redis
+                )
+                # 원본 메시지로 주제 추론 (버퍼에 user 메시지 등록)
+                title_changed = await container.ingest_message(full_message)
+                if title_changed:
+                    title_event = json.dumps({
+                        "type":       "title_updated",
+                        "session_id": session_id,
+                        "title":      container.session_name,
+                    }, ensure_ascii=False)
+                    for q in list(_session_sse_queues.get(session_id, [])):
+                        try:
+                            q.put_nowait(title_event)
+                        except asyncio.QueueFull:
+                            pass
+                bot_text = await container.generate_bot_response(query)
+            except Exception as e:
+                print(f"[ChatService._stream_bot_response] {session_id} 오류: {e}")
+                bot_text = "죄송합니다, 응답을 생성할 수 없습니다."
 
             # DB 저장
             bot_now    = datetime.now(tz=timezone.utc)
@@ -462,7 +503,7 @@ class Router:
                 },
             })
 
-            # SSE 브로드캐스트 — 트리거한 유저의 큐는 제외 (이미 HTTP 스트림으로 수신 중)
+            # SSE 브로드캐스트 (트리거 유저 제외)
             sse_event = json.dumps({
                 "type":        "message",
                 "sender_id":   "bot",
@@ -472,14 +513,13 @@ class Router:
                 "ts":          bot_now.isoformat(),
             }, ensure_ascii=False)
             for q in list(_session_sse_queues.get(session_id, [])):
-                if triggering_user_id and _queue_to_user.get(id(q)) == triggering_user_id:
+                if _queue_to_user.get(id(q)) == triggering_user_id:
                     continue
                 try:
                     q.put_nowait(sse_event)
                 except asyncio.QueueFull:
                     pass
 
-            # 문자 단위 스트리밍
             for char in bot_text:
                 yield char.encode()
                 await asyncio.sleep(0.02)

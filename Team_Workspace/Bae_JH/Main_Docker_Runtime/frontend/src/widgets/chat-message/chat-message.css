@@ -13,7 +13,10 @@
   gap: var(--space-2, 8px);
   animation: messageFadeIn 0.3s ease-out forwards;
   flex-shrink: 0;
+  max-width: 80%;
 }
+.message-row.user { margin-left: auto; }
+.message-row.bot  { margin-right: auto; }
 
 .message-row.user { flex-direction: row-reverse; }
 .message-row.bot  { flex-direction: row; }
@@ -40,7 +43,8 @@
 .message-body-wrap {
   display: flex;
   flex-direction: column;
-  max-width: 70%;
+  min-width: 0;
+  flex: 1 1 0;
 }
 .message-row.user .message-body-wrap { align-items: flex-end; }
 .message-row.bot  .message-body-wrap { align-items: flex-start; }
@@ -93,7 +97,6 @@
 
 /* ── 말풍선 ──────────────────────────────────────────────────── */
 .message {
-  max-width: 75%;
   padding: 10px 16px;
   border-radius: var(--radius-2xl, 20px);
   font-size: var(--app-font-size, 15px);
@@ -106,6 +109,9 @@
   color: #fff;
   border-bottom-right-radius: 6px;
   white-space: pre-wrap;
+  width: fit-content;
+  max-width: 100%;
+  word-break: keep-all;
 }
 
 .message.bot {

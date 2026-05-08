@@ -185,9 +185,12 @@ export function renderSettingsPage(container) {
   // ── 알림 토글 (로그인 후만) ──
   if (!isLoggedIn) return;
 
-  BackendHooks.fetchSettings().then(settings => {
-    if (!settings) return;
-    const notify = settings.notifications || {};
+  BackendHooks.fetchSettings().then(result => {
+    if (!result) return;
+    // GET /api/settings 응답: { data: {ui_settings}, profile: {}, ... }
+    // ui_settings 내 notifications 는 중첩 객체로 저장됨
+    const uiSettings = result.data || result;
+    const notify = uiSettings.notifications || {};
     const applyToggle = (id, val) => {
       const el = container.querySelector(`#${id}`);
       if (el) el.checked = !!val;

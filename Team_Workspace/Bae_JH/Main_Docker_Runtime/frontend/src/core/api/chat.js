@@ -46,7 +46,7 @@ export async function sendTeamMessage(sessionId, message, onBotChunk, onBotDone)
       botText += chunk;
       onBotChunk?.(botText);
     }
-    if (botText) onBotDone?.();
+    onBotDone?.();
   } catch (error) {
     console.error('API Error (sendTeamMessage):', error);
     onBotDone?.();

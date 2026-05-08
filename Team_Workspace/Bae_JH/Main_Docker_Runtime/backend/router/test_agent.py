@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 프로젝트 루트 경로 추가 (module 로드를 위해)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 

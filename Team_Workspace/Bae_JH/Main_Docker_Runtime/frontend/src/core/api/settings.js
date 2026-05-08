@@ -2,11 +2,16 @@
  * settings.js  —  앱 컨텍스트 / 설정 / 테마 / 도움말 / 날씨 API
  */
 
-import { authFetch } from './client.js';
+import { authFetch, tryRefresh } from './client.js';
+import { TokenManager } from './tokens.js';
 
 export async function fetchAppContext() {
   try {
-    const res = await fetch('/api/context');
+    // access token이 만료됐지만 refresh token이 있으면 먼저 갱신
+    if (!TokenManager.isLoggedIn() && TokenManager.getRefreshToken()) {
+      await tryRefresh();
+    }
+    const res = await authFetch('/api/context');
     if (!res.ok) throw new Error('Not Found');
     return await res.json();
   } catch {

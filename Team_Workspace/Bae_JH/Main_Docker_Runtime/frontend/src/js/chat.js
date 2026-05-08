@@ -55,10 +55,9 @@ export const ChatManager = {
     chatInput.value = '';
     adjustTextareaHeight(chatInput, chatBox);
 
-    // 백엔드가 @BOT 여부를 판단 — 응답이 있으면 봇 버블로 표시
-    // 인디케이터는 봇 호출이 실제로 트리거되는 경우(@BOT)에만 표시
+    // 개인 세션이면 항상 bot 응답, 팀 세션이면 @BOT 명시 시만 bot 응답
     let botMsgDiv = null;
-    const willCallBot = /^@BOT\s+/i.test(text);
+    const willCallBot = !isTeam || /^@BOT\s+/i.test(text);
     const loadingId = willCallBot ? showLoadingIndicator(chatHistory) : null;
     if (willCallBot) chatHistory.scrollTop = chatHistory.scrollHeight;
     let _loadingDone = false;
@@ -127,11 +126,8 @@ export const ChatManager = {
     adjustTextareaHeight(chatInput, chatBox);
     chatHistory.scrollTop = chatHistory.scrollHeight;
 
-    // @BOT 없으면 로컬 버블만 표시하고 종료
-    const botMatch = text.match(/^@BOT\s+([\s\S]+)/i);
-    if (!botMatch) return;
-
-    const botQuery = botMatch[1].trim();
+    // @BOT 접두사 제거 후 항상 봇 응답
+    const botQuery = text.replace(/^@BOT\s+/i, '').trim();
     state.isReceiving = true;
 
     const loadingId = showLoadingIndicator(chatHistory);

@@ -204,9 +204,9 @@ export async function router(state, elements) {
       }
     }
 
-    // SSE는 참여자 수 기준으로 시작
+    // SSE: 팀/개인 모두 구독 (팀=실시간 메시지, 개인=title_updated 수신)
     const isTeamSession = (state.currentParticipantCount || 1) > 1;
-    if (isTeamSession) {
+    if (true) {
       const myId = TokenManager.getUserId();
       state._sseConnection = BackendHooks.subscribeToSessionEvents(
         ssid,

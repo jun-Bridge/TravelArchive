@@ -140,12 +140,105 @@ class Loader:
     # ── 설정 ────────────────────────────────────────────────
 
     @staticmethod
-    async def get_settings(user_id: str) -> dict:
-        return {"status": "success", "data": {}}
+    async def get_settings(postgres, user_id: str) -> dict:
+        """
+        프론트엔드 설정 전체 반환.
+        - data       : ui_settings JSONB (투명도·테마·폰트·알림)
+        - profile    : user_profile의 bio, nickname, email, extra_contacts
+        - style      : user_preferences.style (AI 스타일·말투)
+        - travel     : user_preferences.travel (여행 스타일)
+        - oauth_provider: 연동된 SNS provider (있으면)
+        """
+        pref_r = await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                SELECT up.bio, up.nickname, up.email, up.extra_contacts,
+                       upr.ui_settings, upr.style, upr.travel,
+                       uo.provider AS oauth_provider
+                FROM user_profile up
+                LEFT JOIN user_preferences upr ON upr.user_id = up.user_id
+                LEFT JOIN user_oauth uo ON uo.user_id = up.user_id
+                WHERE up.user_id = :uid
+                LIMIT 1
+            """,
+            "params": {"uid": user_id},
+        })
+        rows = pref_r.get("data", [])
+        if not rows:
+            return {"status": "success", "data": {}, "profile": {}, "style": {}, "travel": {}}
+
+        row = rows[0]
+        return {
+            "status": "success",
+            "data":           row.get("ui_settings") or {},
+            "profile": {
+                "bio":            row.get("bio"),
+                "nickname":       row.get("nickname"),
+                "email1":         row.get("email"),
+                "extra_contacts": row.get("extra_contacts") or [],
+            },
+            "style":          row.get("style")  or {},
+            "travel":         row.get("travel") or {},
+            "oauth_provider": row.get("oauth_provider"),
+        }
 
     @staticmethod
-    async def update_settings(user_id: str, settings: dict) -> dict:
-        print(f"[Loader] {user_id} 설정 업데이트: {settings}")
+    async def update_settings(postgres, user_id: str, settings: dict) -> dict:
+        """
+        ui_settings JSONB 부분 업데이트.
+        점 표기법 키(notifications.response)는 JSONB 중첩 객체로 분해해서 저장.
+        예: {"notifications.response": true}
+             → ui_settings = ui_settings || '{"notifications": {"response": true}}'
+        """
+        import json
+
+        # 점 표기법 키를 중첩 dict로 변환
+        merged: dict = {}
+        for key, value in settings.items():
+            parts = key.split(".")
+            node = merged
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = value
+
+        # 기존 ui_settings와 딥머지하는 SQL
+        # jsonb_deep_merge 없이 || 연산자로 최상위 키만 처리하되,
+        # notifications 같은 서브키는 기존 값과 merge
+        await postgres.execute({
+            "action": "raw_sql",
+            "sql": """
+                INSERT INTO user_preferences (user_id, ui_settings, updated_at)
+                VALUES (:uid, CAST(:ui AS jsonb), NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET ui_settings = (
+                    SELECT jsonb_object_agg(key, CASE
+                        WHEN jsonb_typeof(existing.val) = 'object'
+                             AND jsonb_typeof(incoming.val) = 'object'
+                        THEN existing.val || incoming.val
+                        ELSE incoming.val
+                    END)
+                    FROM (
+                        SELECT key,
+                               COALESCE(user_preferences.ui_settings, '{}') -> key AS val
+                        FROM jsonb_object_keys(
+                            COALESCE(user_preferences.ui_settings, '{}') || CAST(:ui AS jsonb)
+                        ) AS key
+                    ) existing
+                    JOIN (
+                        SELECT key,
+                               (COALESCE(user_preferences.ui_settings, '{}') || CAST(:ui AS jsonb)) -> key AS val
+                        FROM jsonb_object_keys(
+                            COALESCE(user_preferences.ui_settings, '{}') || CAST(:ui AS jsonb)
+                        ) AS key
+                    ) incoming USING (key)
+                ),
+                updated_at = NOW()
+            """,
+            "params": {
+                "uid": user_id,
+                "ui":  json.dumps(merged),
+            },
+        })
         return {"status": "success"}
 
     # ── 여행(Trip) ───────────────────────────────────────────
