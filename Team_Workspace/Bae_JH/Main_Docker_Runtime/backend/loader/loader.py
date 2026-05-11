@@ -58,6 +58,25 @@ class Loader:
 
         app.state.postgres = postgres
         app.state.redis    = redis
+
+        from module.node.widget.memo_node      import MemoNode
+        from module.node.widget.plan_node      import PlanNode
+        from module.node.widget.map_node       import MapNode
+        from module.node.widget.trip_range_node import TripRangeNode
+
+        memo_node       = MemoNode()
+        plan_node       = PlanNode()
+        map_node        = MapNode()
+        trip_range_node = TripRangeNode()
+
+        for node in (memo_node, plan_node, map_node, trip_range_node):
+            node.bind_redis(redis)
+
+        app.state.memo_node       = memo_node
+        app.state.plan_node       = plan_node
+        app.state.map_node        = map_node
+        app.state.trip_range_node = trip_range_node
+
         print("[Loader] PostgreSQL & Redis 초기화 완료")
         yield
         await redis.close()

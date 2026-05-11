@@ -15,6 +15,7 @@
   flex-shrink: 0;
   max-width: 80%;
 }
+.message-row.user { max-width: 95%; }
 .message-row.user { margin-left: auto; }
 .message-row.bot  { margin-right: auto; }
 

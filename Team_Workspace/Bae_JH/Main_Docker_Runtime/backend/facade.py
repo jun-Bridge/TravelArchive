@@ -633,36 +633,38 @@ async def upload_files(session_id: str, request: Request,
 @app.post("/api/sessions/{session_id}/map/markers/add")
 async def add_map_marker(session_id: str, req: MapMarkerAddRequest, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await ChatService.add_map_marker(session_id, req.marker_id, req.lat, req.lng,
-                                        req.title or "", user_id, request.app.state.redis)
+    await request.app.state.map_node.add_marker(session_id, req.marker_id, req.lat, req.lng, req.title or "")
+    return {"success": True, "marker_id": req.marker_id}
 
 @app.delete("/api/sessions/{session_id}/map/markers/{marker_id}")
 async def delete_map_marker(session_id: str, marker_id: str, request: Request,
                              user_id: str = Depends(get_current_user)):
-    return await ChatService.delete_map_marker(session_id, marker_id, user_id,
-                                           request.app.state.redis)
+    await request.app.state.map_node.delete_marker(session_id, marker_id)
+    return {"success": True}
 
 @app.post("/api/sessions/{session_id}/map/markers")
 async def save_map_markers(session_id: str, req: MapMarkersRequest, request: Request,
                             user_id: str = Depends(get_current_user)):
-    return await ChatService.save_map_markers(session_id, req.markers, user_id,
-                                          request.app.state.redis)
+    await request.app.state.map_node.set_markers(session_id, req.markers)
+    return {"success": True}
 
 @app.get("/api/sessions/{session_id}/map/markers")
 async def get_map_markers(session_id: str, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await ChatService.get_map_markers(session_id, user_id, request.app.state.redis)
+    markers = await request.app.state.map_node.get_markers(session_id)
+    return {"markers": markers}
 
 @app.post("/api/sessions/{session_id}/map/routes")
 async def save_map_routes(session_id: str, req: MapRoutesRequest, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await ChatService.save_map_routes(session_id, req.marker_ids, user_id,
-                                         request.app.state.redis)
+    await request.app.state.map_node.set_routes(session_id, req.marker_ids)
+    return {"success": True}
 
 @app.get("/api/sessions/{session_id}/map/routes")
 async def get_map_routes(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await ChatService.get_map_routes(session_id, user_id, request.app.state.redis)
+    marker_ids = await request.app.state.map_node.get_routes(session_id)
+    return {"marker_ids": marker_ids}
 
 
 # ============================================================
@@ -672,13 +674,14 @@ async def get_map_routes(session_id: str, request: Request,
 @app.put("/api/sessions/{session_id}/trip_range")
 async def save_trip_range(session_id: str, req: TripRangeRequest, request: Request,
                            user_id: str = Depends(get_current_user)):
-    return await ChatService.save_trip_range(session_id, req.ranges, user_id,
-                                         request.app.state.redis)
+    await request.app.state.trip_range_node.set(session_id, req.ranges)
+    return {"success": True}
 
 @app.get("/api/sessions/{session_id}/trip_range")
 async def get_trip_range(session_id: str, request: Request,
                           user_id: str = Depends(get_current_user)):
-    return await ChatService.get_trip_range(session_id, user_id, request.app.state.redis)
+    ranges = await request.app.state.trip_range_node.get(session_id)
+    return {"ranges": ranges}
 
 
 # ============================================================
@@ -688,22 +691,26 @@ async def get_trip_range(session_id: str, request: Request,
 @app.put("/api/sessions/{session_id}/memo")
 async def save_memo(session_id: str, date: str, req: MemoRequest, request: Request,
                     user_id: str = Depends(get_current_user)):
-    return await ChatService.save_memo(session_id, date, req.memo, user_id, request.app.state.redis)
+    await request.app.state.memo_node.set(session_id, date, req.memo)
+    return {"success": True}
 
 @app.get("/api/sessions/{session_id}/memo")
 async def get_memo(session_id: str, date: str, request: Request,
                    user_id: str = Depends(get_current_user)):
-    return await ChatService.get_memo(session_id, date, user_id, request.app.state.redis)
+    memo = await request.app.state.memo_node.get(session_id, date)
+    return {"memo": memo}
 
 @app.put("/api/sessions/{session_id}/plan")
 async def save_plan(session_id: str, date: str, req: PlanRequest, request: Request,
                     user_id: str = Depends(get_current_user)):
-    return await ChatService.save_plan(session_id, date, req.plan, user_id, request.app.state.redis)
+    await request.app.state.plan_node.set(session_id, date, req.plan)
+    return {"success": True}
 
 @app.get("/api/sessions/{session_id}/plan")
 async def get_plan(session_id: str, date: str, request: Request,
                    user_id: str = Depends(get_current_user)):
-    return await ChatService.get_plan(session_id, date, user_id, request.app.state.redis)
+    plan = await request.app.state.plan_node.get(session_id, date)
+    return {"plan": plan}
 
 @app.get("/api/sessions/{session_id}/indicators")
 async def get_indicators(session_id: str, year: int, month: int, request: Request,
