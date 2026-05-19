@@ -24,6 +24,7 @@ from fastapi.security import OAuth2PasswordBearer
 from ...memory.cacher import Cacher
 from ...memory.events import (
     GetMyInfoRequestEvent,
+    LogoutAllDevicesEvent,
     LogoutRequestEvent,
     RefreshRequestEvent,
 )
@@ -31,6 +32,12 @@ from ...memory.events import (
 # ── JWT 설정 ──────────────────────────────────────────────────
 ACCESS_TOKEN_SECRET_KEY      = os.getenv("ACCESS_TOKEN_SECRET_KEY", "")
 REFRESH_TOKEN_SECRET_KEY     = os.getenv("REFRESH_TOKEN_SECRET_KEY", "")
+
+if not ACCESS_TOKEN_SECRET_KEY or not REFRESH_TOKEN_SECRET_KEY:
+    raise RuntimeError(
+        "ACCESS_TOKEN_SECRET_KEY 또는 REFRESH_TOKEN_SECRET_KEY 환경변수가 설정되지 않았습니다. "
+        "빈 JWT 시크릿으로 서버를 시작할 수 없습니다."
+    )
 ACCESS_TOKEN_EXPIRE_MINUTES  = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS    = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 ALGORITHM = "HS256"
@@ -125,6 +132,12 @@ class AuthManager:
         future = asyncio.get_running_loop().create_future()
         manager.emit(RefreshRequestEvent(refresh_token=refresh_token, future=future), priority=True)
         return await future
+
+    @staticmethod
+    async def logout_all_devices(user_id: str, manager: Any) -> None:
+        future = asyncio.get_running_loop().create_future()
+        manager.emit(LogoutAllDevicesEvent(user_id=user_id, future=future), priority=True)
+        await future
 
     @staticmethod
     async def get_my_info(user_id: str, redis: Any, manager: Any) -> Any:

@@ -747,6 +747,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     catch { alert('다운로드에 실패했습니다. 잠시 후 다시 시도해 주세요.'); }
   });
 
+  elements.shareChatBtn?.addEventListener('click', async () => {
+    if (!state.currentSessionId) return;
+    try {
+      const res = await BackendHooks.shareChat(state.currentSessionId);
+      const url = window.location.origin + (res.share_url || '');
+      await navigator.clipboard.writeText(url);
+      showToast('공유 링크가 복사되었습니다.');
+    } catch { showToast('링크 복사에 실패했습니다.'); }
+  });
+
   // 세션 정보 버튼
   elements.sessionInfoBtn?.addEventListener('click', async () => {
     if (!state.currentSessionId) return;

@@ -22,6 +22,7 @@ import asyncio
 import json
 from typing import Any, Optional
 
+from .constants import DATA_TTL, SESSION_TTL, USER_ANALYSIS_TTL, USER_DATA_TTL, USER_SESSION_SET_TTL
 from .events import (
     AcceptInviteEvent,
     ClearNotifsEvent,
@@ -54,12 +55,6 @@ from .events import (
     UpdateSessionRecordEvent,
     UpdateTripEvent,
 )
-
-SESSION_TTL          = 3600 * 8
-USER_SESSION_SET_TTL = 3600 * 24
-DATA_TTL             = 3600 * 24
-USER_DATA_TTL        = 3600 * 8
-
 
 def _future() -> asyncio.Future:
     return asyncio.get_running_loop().create_future()
@@ -102,20 +97,11 @@ class Cacher:
 
     @staticmethod
     async def set_current_session(user_id: str, session_id: str, redis):
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:current_session",
-            "value":  session_id,
-            "ttl":    SESSION_TTL,
-        })
+        await redis.set_str(f"user:{user_id}:current_session", session_id, SESSION_TTL)
 
     @staticmethod
     async def get_current_session(user_id: str, redis) -> Optional[str]:
-        result = await redis.execute({
-            "action": "get",
-            "key":    f"user:{user_id}:current_session",
-        })
-        return result.get("value")
+        return await redis.get_str(f"user:{user_id}:current_session")
 
     # ── 세션 메타 캐시 ───────────────────────────────────────
 
@@ -139,69 +125,33 @@ class Cacher:
 
     @staticmethod
     async def delete_session_cache(session_id: str, redis):
-        await redis.execute({"action": "delete", "key": f"session:{session_id}:meta"})
+        await redis.delete(f"session:{session_id}:meta")
 
     # ── 마커 / 경로 / 기간 ───────────────────────────────────
 
     @staticmethod
     async def save_markers(session_id: str, markers: list, redis):
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:markers",
-            "value":  json.dumps(markers, ensure_ascii=False),
-            "ttl":    DATA_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:markers", markers, DATA_TTL)
 
     @staticmethod
     async def get_markers(session_id: str, redis) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:markers"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return []
+        return await redis.get_json(f"session:{session_id}:markers") or []
 
     @staticmethod
     async def save_routes(session_id: str, marker_ids: list, redis):
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:routes",
-            "value":  json.dumps(marker_ids, ensure_ascii=False),
-            "ttl":    DATA_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:routes", marker_ids, DATA_TTL)
 
     @staticmethod
     async def get_routes(session_id: str, redis) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:routes"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return []
+        return await redis.get_json(f"session:{session_id}:routes") or []
 
     @staticmethod
     async def save_ranges(session_id: str, ranges: list, redis):
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:ranges",
-            "value":  json.dumps(ranges, ensure_ascii=False),
-            "ttl":    DATA_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:ranges", ranges, DATA_TTL)
 
     @staticmethod
     async def get_ranges(session_id: str, redis) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:ranges"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return []
+        return await redis.get_json(f"session:{session_id}:ranges") or []
 
     # ── 사용자 프로필 ─────────────────────────────────────────
 
@@ -210,7 +160,7 @@ class Cacher:
         await redis.execute({
             "action":  "hset",
             "key":     f"user:{user_id}:profile",
-            "mapping": {k: str(v) for k, v in data.items()},
+            "mapping": {k: json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else str(v) for k, v in data.items()},
             "ttl":     USER_DATA_TTL,
         })
 
@@ -218,6 +168,11 @@ class Cacher:
     async def get_user_profile(user_id: str, redis, manager: Any = None) -> dict:
         result = await redis.execute({"action": "hgetall", "key": f"user:{user_id}:profile"})
         data = result.get("data", {}) or {}
+        if "extra_contacts" in data and isinstance(data["extra_contacts"], str):
+            try:
+                data["extra_contacts"] = json.loads(data["extra_contacts"])
+            except Exception:
+                data["extra_contacts"] = []
         if data or manager is None:
             return data
         fut = _future()
@@ -230,45 +185,21 @@ class Cacher:
     async def save_user_style(user_id: str, data: dict, redis) -> None:
         existing = await Cacher.get_user_style(user_id, redis)
         existing.update(data)
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:style",
-            "value":  json.dumps(existing, ensure_ascii=False),
-            "ttl":    USER_DATA_TTL,
-        })
+        await redis.set_json(f"user:{user_id}:style", existing, USER_DATA_TTL)
 
     @staticmethod
     async def get_user_style(user_id: str, redis) -> dict:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:style"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return {}
+        return await redis.get_json(f"user:{user_id}:style") or {}
 
     @staticmethod
     async def save_user_travel(user_id: str, data: dict, redis) -> None:
         existing = await Cacher.get_user_travel(user_id, redis)
         existing.update(data)
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:travel",
-            "value":  json.dumps(existing, ensure_ascii=False),
-            "ttl":    USER_DATA_TTL,
-        })
+        await redis.set_json(f"user:{user_id}:travel", existing, USER_DATA_TTL)
 
     @staticmethod
     async def get_user_travel(user_id: str, redis) -> dict:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:travel"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return {}
+        return await redis.get_json(f"user:{user_id}:travel") or {}
 
     @staticmethod
     async def save_ui_settings(user_id: str, data: dict, redis) -> None:
@@ -278,95 +209,68 @@ class Cacher:
                 existing[k].update(v)
             else:
                 existing[k] = v
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:ui_settings",
-            "value":  json.dumps(existing, ensure_ascii=False),
-            "ttl":    USER_DATA_TTL,
-        })
+        await redis.set_json(f"user:{user_id}:ui_settings", existing, USER_DATA_TTL)
 
     @staticmethod
     async def get_ui_settings(user_id: str, redis) -> dict:
         """UI 설정은 로그인 시 EventHandler가 미리 적재한다. miss시 빈 dict."""
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:ui_settings"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return {}
+        return await redis.get_json(f"user:{user_id}:ui_settings") or {}
 
     # ── 계정 삭제 플래그 ─────────────────────────────────────
 
     @staticmethod
     async def mark_account_deleted(user_id: str, redis) -> None:
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:pending_delete",
-            "value":  "1",
-            "ttl":    USER_DATA_TTL,
-        })
+        await redis.set_str(f"user:{user_id}:pending_delete", "1", USER_DATA_TTL)
 
     @staticmethod
     async def is_account_deleted(user_id: str, redis) -> bool:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:pending_delete"})
-        return result.get("value") == "1"
+        return await redis.get_str(f"user:{user_id}:pending_delete") == "1"
 
     @staticmethod
     async def delete_user_data(user_id: str, redis) -> None:
-        for suffix in ("profile", "style", "travel", "ui_settings", "pending_delete"):
-            await redis.execute({"action": "delete", "key": f"user:{user_id}:{suffix}"})
+        for suffix in ("profile", "style", "travel", "ui_settings", "pending_delete", "analysis", "sessions:all"):
+            await redis.delete(f"user:{user_id}:{suffix}")
 
     @staticmethod
     async def delete_current_session(user_id: str, redis) -> None:
-        await redis.execute({"action": "delete", "key": f"user:{user_id}:current_session"})
+        await redis.delete(f"user:{user_id}:current_session")
 
     # ── 메모 / 플랜 ──────────────────────────────────────────
 
     @staticmethod
     async def save_memo(session_id: str, date_key: str, memo: str, redis) -> None:
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:memo:{date_key}",
-            "value":  memo,
-            "ttl":    DATA_TTL,
-        })
+        await redis.set_str(f"session:{session_id}:memo:{date_key}", memo, DATA_TTL)
 
     @staticmethod
     async def get_memo(session_id: str, date_key: str, redis) -> str:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:memo:{date_key}"})
-        return result.get("value") or ""
+        return await redis.get_str(f"session:{session_id}:memo:{date_key}") or ""
 
     @staticmethod
     async def save_plan(session_id: str, date_key: str, plan: list, redis) -> None:
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:plan:{date_key}",
-            "value":  json.dumps(plan, ensure_ascii=False),
-            "ttl":    DATA_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:plan:{date_key}", plan, DATA_TTL)
 
     @staticmethod
     async def get_plan(session_id: str, date_key: str, redis) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:plan:{date_key}"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return []
+        return await redis.get_json(f"session:{session_id}:plan:{date_key}") or []
 
     @staticmethod
     async def get_indicators(session_id: str, year: int, month: int, redis) -> list:
-        dates = set()
-        for day in range(1, 32):
-            date_key = f"{year}-{month:02d}-{day:02d}"
-            memo_r = await redis.execute({"action": "exists", "key": f"session:{session_id}:memo:{date_key}"})
-            plan_r = await redis.execute({"action": "exists", "key": f"session:{session_id}:plan:{date_key}"})
-            if memo_r.get("exists") or plan_r.get("exists"):
-                dates.add(date_key)
+        day_keys = [f"{year}-{month:02d}-{day:02d}" for day in range(1, 32)]
+        all_keys = [
+            k
+            for date_key in day_keys
+            for k in (
+                f"session:{session_id}:memo:{date_key}",
+                f"session:{session_id}:plan:{date_key}",
+            )
+        ]
+        found = await redis.exists_many(all_keys)
+        dates = {
+            date_key
+            for date_key in day_keys
+            if f"session:{session_id}:memo:{date_key}" in found
+            or f"session:{session_id}:plan:{date_key}" in found
+        }
         return list(dates)
 
     # ── 세션 버퍼 (SessionContainer용) ───────────────────────
@@ -379,39 +283,36 @@ class Cacher:
         return result.get("value") or ""
 
     @staticmethod
-    async def save_session_buf(session_id: str, messages: list, redis) -> None:
+    async def get_user_analysis(user_id: str, redis) -> str:
+        return await redis.get_str(f"user:{user_id}:analysis") or ""
+
+    @staticmethod
+    async def save_user_analysis(user_id: str, analysis: str, redis) -> None:
+        await redis.set_str(f"user:{user_id}:analysis", analysis, USER_ANALYSIS_TTL)
+        # profile hash의 personalized_topics 동기화 (GENERATION_PROMPT 경로)
         await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:buf_msgs",
-            "value":  json.dumps(messages, ensure_ascii=False),
-            "ttl":    SESSION_TTL,
+            "action": "hset", "key": f"user:{user_id}:profile",
+            "mapping": {"personalized_topics": analysis},
+            "ttl": USER_DATA_TTL,
         })
+
+    @staticmethod
+    async def save_session_buf(session_id: str, messages: list, redis) -> None:
+        await redis.set_json(f"session:{session_id}:buf_msgs", messages, SESSION_TTL)
 
     @staticmethod
     async def get_session_buf(session_id: str, redis) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:buf_msgs"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        return []
+        return await redis.get_json(f"session:{session_id}:buf_msgs") or []
 
     @staticmethod
     async def save_session_msg_count(session_id: str, count: int, redis) -> None:
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:msg_count",
-            "value":  str(count),
-            "ttl":    SESSION_TTL,
-        })
+        await redis.set_str(f"session:{session_id}:msg_count", str(count), SESSION_TTL)
 
     @staticmethod
     async def get_session_msg_count(session_id: str, redis) -> int:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:msg_count"})
+        value = await redis.get_str(f"session:{session_id}:msg_count")
         try:
-            return int(result.get("value") or 0)
+            return int(value or 0)
         except (ValueError, TypeError):
             return 0
 
@@ -429,26 +330,16 @@ class Cacher:
     async def save_message(session_id: str, msg_data: dict, redis, manager: Any = None) -> None:
         existing = await Cacher.get_messages(session_id, redis)
         existing.append(msg_data)
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:messages",
-            "value":  json.dumps(existing, ensure_ascii=False, default=str),
-            "ttl":    SESSION_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:messages", existing, SESSION_TTL)
         if manager is not None:
             manager.emit(SaveMessageEvent(session_id=session_id, msg_data=msg_data))
 
     @staticmethod
     async def get_messages(session_id: str, redis, manager: Any = None,
                             limit: int = 40, offset: int = 0) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:messages"})
-        val = result.get("value")
-        if val:
-            try:
-                msgs = json.loads(val)
-                return msgs[offset:offset + limit] if limit else msgs[offset:]
-            except Exception:
-                pass
+        msgs = await redis.get_json(f"session:{session_id}:messages")
+        if msgs is not None:
+            return msgs[offset:offset + limit] if limit else msgs[offset:]
         if manager is None:
             return []
         fut = _future()
@@ -459,22 +350,13 @@ class Cacher:
 
     @staticmethod
     async def save_session_participants(session_id: str, participants: list, redis) -> None:
-        await redis.execute({
-            "action": "set",
-            "key":    f"session:{session_id}:participants",
-            "value":  json.dumps(participants, ensure_ascii=False, default=str),
-            "ttl":    SESSION_TTL,
-        })
+        await redis.set_json(f"session:{session_id}:participants", participants, SESSION_TTL)
 
     @staticmethod
     async def get_session_participants(session_id: str, redis, manager: Any = None) -> list:
-        result = await redis.execute({"action": "get", "key": f"session:{session_id}:participants"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
+        cached = await redis.get_json(f"session:{session_id}:participants")
+        if cached is not None:
+            return cached
         if manager is None:
             return []
         fut = _future()
@@ -487,25 +369,15 @@ class Cacher:
     async def save_notification(user_id: str, notif_data: dict, redis, manager: Any = None) -> None:
         existing = await Cacher.get_notifications(user_id, redis)
         existing.append(notif_data)
-        await redis.execute({
-            "action": "set",
-            "key":    f"user:{user_id}:notifications",
-            "value":  json.dumps(existing, ensure_ascii=False, default=str),
-            "ttl":    USER_DATA_TTL,
-        })
+        await redis.set_json(f"user:{user_id}:notifications", existing, USER_DATA_TTL)
         if manager is not None:
             manager.emit(SaveNotificationEvent(user_id=user_id, notif_data=notif_data))
 
     @staticmethod
     async def get_notifications(user_id: str, redis, manager: Any = None, limit: int = 50) -> list:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:notifications"})
-        val = result.get("value")
-        if val:
-            try:
-                msgs = json.loads(val)
-                return msgs[-limit:] if limit else msgs
-            except Exception:
-                pass
+        cached = await redis.get_json(f"user:{user_id}:notifications")
+        if cached is not None:
+            return cached[-limit:] if limit else cached
         if manager is None:
             return []
         fut = _future()
@@ -517,32 +389,70 @@ class Cacher:
 
     @staticmethod
     async def get_user_by_nickname(nickname: str, redis, manager: Any = None) -> Optional[str]:
-        result = await redis.execute({"action": "get", "key": f"nick:{nickname}:user_id"})
-        if result.get("value"):
-            return result["value"]
+        cached = await redis.get_str(f"nick:{nickname}:user_id")
+        if cached:
+            return cached
         if manager is None:
             return None
         fut = _future()
         manager.emit(GetUserByNicknameEvent(nickname=nickname, future=fut), priority=True)
         return await fut
 
-    # ── 세션 목록 ─────────────────────────────────────────────
+    # ── 세션 목록 (Redis = source of truth) ────────────────────
+    #   user:{user_id}:sessions:all → 전체 세션 JSON 배열 (Redis-authoritative)
+    #   trip 필터링은 Redis에서 in-memory 필터링으로 처리
+    #   로그인 시 PG → Redis 1회 로드, 이후 모든 mutation은 Redis 우선
 
     @staticmethod
     async def get_session_list(user_id: str, trip_id, redis, manager: Any = None) -> list:
-        key = f"user:{user_id}:sessions:{trip_id or 'all'}"
-        result = await redis.execute({"action": "get", "key": key})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        if manager is None:
-            return []
-        fut = _future()
-        manager.emit(LoadSessionListEvent(user_id=user_id, trip_id=trip_id, future=fut), priority=True)
-        return await fut
+        """Redis-only 읽기. cache miss 시 PG에서 1회 로드 (로그인 직후/만료 후 fallback)."""
+        all_key = f"user:{user_id}:sessions:all"
+        sessions: list = await redis.get_json(all_key) or []
+        if not sessions:
+            if manager is None:
+                return []
+            fut = _future()
+            manager.emit(LoadSessionListEvent(user_id=user_id, trip_id=None, future=fut), priority=True)
+            sessions = await fut or []
+
+        if not trip_id or trip_id == "all":
+            return sessions
+        if trip_id == "misc":
+            return [s for s in sessions if s.get("trip_is_misc")]
+        return [s for s in sessions if s.get("trip_id") == trip_id]
+
+    @staticmethod
+    async def session_list_remove(user_id: str, session_id: str, redis) -> None:
+        """Redis 세션 목록에서 1건 제거 (즉시 반영)."""
+        key = f"user:{user_id}:sessions:all"
+        sessions = await redis.get_json(key)
+        if sessions is None:
+            return
+        sessions = [s for s in sessions if s.get("session_id") != session_id]
+        await redis.set_json(key, sessions, SESSION_TTL)
+
+    @staticmethod
+    async def session_list_add(user_id: str, session_data: dict, redis) -> None:
+        """Redis 세션 목록 맨 앞에 추가 (이미 있으면 교체)."""
+        key = f"user:{user_id}:sessions:all"
+        sessions = await redis.get_json(key) or []
+        sid = session_data.get("session_id")
+        sessions = [s for s in sessions if s.get("session_id") != sid]
+        sessions.insert(0, session_data)
+        await redis.set_json(key, sessions, SESSION_TTL)
+
+    @staticmethod
+    async def session_list_update(user_id: str, session_id: str, updates: dict, redis) -> None:
+        """Redis 세션 목록의 특정 항목 필드 갱신 (title/color/trip 등)."""
+        key = f"user:{user_id}:sessions:all"
+        sessions = await redis.get_json(key)
+        if sessions is None:
+            return
+        for s in sessions:
+            if s.get("session_id") == session_id:
+                s.update(updates)
+                break
+        await redis.set_json(key, sessions, SESSION_TTL)
 
     # ── 세션/여행/팀 mutation — 모두 manager 경유 ──────────────
 
@@ -560,13 +470,9 @@ class Cacher:
 
     @staticmethod
     async def get_trip_list(user_id: str, redis, manager: Any = None) -> list:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:trips"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
+        cached = await redis.get_json(f"user:{user_id}:trips")
+        if cached is not None:
+            return cached
         if manager is None:
             return []
         fut = _future()
@@ -613,7 +519,7 @@ class Cacher:
     @staticmethod
     async def remove_non_master_participants(session_id: str, redis, manager: Any) -> None:
         manager.emit(RemoveNonMasterEvent(session_id=session_id))
-        await redis.execute({"action": "delete", "key": f"session:{session_id}:participants"})
+        await redis.delete(f"session:{session_id}:participants")
 
     @staticmethod
     async def update_session_record(session_id: str, data: dict, redis, manager: Any) -> None:
@@ -675,13 +581,9 @@ class Cacher:
 
     @staticmethod
     async def get_user_teams(user_id: str, redis, manager: Any = None) -> list:
-        result = await redis.execute({"action": "get", "key": f"user:{user_id}:teams"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
+        cached = await redis.get_json(f"user:{user_id}:teams")
+        if cached is not None:
+            return cached
         if manager is None:
             return []
         fut = _future()
@@ -690,13 +592,9 @@ class Cacher:
 
     @staticmethod
     async def get_team_sessions(team_id: str, redis, manager: Any = None) -> list:
-        result = await redis.execute({"action": "get", "key": f"team:{team_id}:sessions"})
-        val = result.get("value")
-        if val:
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
+        cached = await redis.get_json(f"team:{team_id}:sessions")
+        if cached is not None:
+            return cached
         if manager is None:
             return []
         fut = _future()

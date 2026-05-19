@@ -1,3 +1,9 @@
-# [stub] 여행 선택 위젯 — 미구현
 class TripSelectWidget:
-    pass
+    def __init__(self) -> None:
+        self.value: str = ""
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value

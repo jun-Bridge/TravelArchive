@@ -38,6 +38,13 @@ export const NotificationManager = {
         const dot = wrapper?.querySelector('.trip-color-dot');
         if (dot) dot.classList.add('unread');
       },
+
+      onSessionLeft: (sessionId) => {
+        elements._refreshSessions?.();
+        if (window.location.hash === `#/chat/${sessionId}`) {
+          window.location.hash = '#/';
+        }
+      },
     });
   },
 

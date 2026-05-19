@@ -8,7 +8,7 @@
 import asyncio
 from typing import Any, Optional
 
-from ...memory.events import LoginRequestEvent, SignupEvent, SignupRequestEvent
+from ...memory.events import LoginRequestEvent, SignupRequestEvent
 from .auth_kakao import get_kakao_auth_url, initiate_kakao_link, kakao_callback
 
 
@@ -33,8 +33,7 @@ class AuthRequest:
     @staticmethod
     async def kakao_callback(code: str, redis: Any, manager: Any, state: Optional[str] = None) -> dict[str, Any]:
         result = await kakao_callback(code, redis, manager, state)
-        if result.get("is_new"):
-            manager.emit(SignupEvent(user_id=result["user_id"]))
+        # KKO: load_user_to_redis가 event_handler에서 이미 처리하므로 SignupEvent 불필요
         return result
 
     @staticmethod

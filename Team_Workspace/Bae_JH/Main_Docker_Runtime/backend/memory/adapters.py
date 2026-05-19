@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import OrderedDict
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Mapping, TypeAlias
+
+from .constants import MAX_BUFFER_SESSIONS
 
 import psycopg2
 from psycopg2 import pool, sql
@@ -46,6 +49,39 @@ class PgAdapter:
 
     def close(self) -> None:
         self._pool.closeall()
+
+    async def query(self, raw_sql: str, params: dict[str, Any] | None = None) -> list[Row]:
+        result = await self.execute({"action": "raw_sql", "sql": raw_sql, "params": params or {}})
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "pg query failed"))
+        data = result.get("data", [])
+        return data if isinstance(data, list) else []
+
+    async def create(self, model: str, data: dict[str, Any]) -> Row:
+        result = await self.execute({"action": "create", "model": model, "data": data})
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "pg create failed"))
+        row = result.get("data", {})
+        return row if isinstance(row, dict) else {}
+
+    async def read(self, model: str, filters: dict[str, Any] | None = None) -> list[Row]:
+        result = await self.execute({"action": "read", "model": model, "filters": filters or {}})
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "pg read failed"))
+        data = result.get("data", [])
+        return data if isinstance(data, list) else []
+
+    async def update(self, model: str, filters: dict[str, Any], data: dict[str, Any]) -> int:
+        result = await self.execute({"action": "update", "model": model, "filters": filters, "data": data})
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "pg update failed"))
+        return int(result.get("updated_count", 0))
+
+    async def delete_row(self, model: str, filters: dict[str, Any]) -> int:
+        result = await self.execute({"action": "delete", "model": model, "filters": filters})
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "pg delete failed"))
+        return int(result.get("deleted_count", 0))
 
     def _execute_sync(self, payload: Payload) -> Result:
         action = payload.get("action")
@@ -135,6 +171,66 @@ class RedisAdapter:
 
     async def close(self) -> None:
         await self._redis.aclose()
+
+    async def get_json(self, key: str) -> Any:
+        result = await self.execute({"action": "get", "key": key})
+        value = result.get("value")
+        if value is None:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    async def set_json(self, key: str, value: Any, ttl: int | None = None) -> None:
+        payload: Payload = {
+            "action": "set",
+            "key": key,
+            "value": json.dumps(value, ensure_ascii=False, default=str),
+        }
+        if ttl is not None:
+            payload["ttl"] = ttl
+        result = await self.execute(payload)
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "redis set_json failed"))
+
+    async def get_str(self, key: str) -> str | None:
+        result = await self.execute({"action": "get", "key": key})
+        value = result.get("value")
+        return value if isinstance(value, str) else None
+
+    async def set_str(self, key: str, value: str, ttl: int | None = None) -> None:
+        payload: Payload = {"action": "set", "key": key, "value": value}
+        if ttl is not None:
+            payload["ttl"] = ttl
+        result = await self.execute(payload)
+        if result.get("status") != "success":
+            raise RuntimeError(result.get("reason", "redis set_str failed"))
+
+    async def delete(self, key: str) -> None:
+        await self._redis.delete(key)
+
+    async def exists(self, key: str) -> bool:
+        return bool(await self._redis.exists(key))
+
+    async def exists_many(self, keys: list[str]) -> set[str]:
+        """파이프라인으로 여러 키의 존재 여부를 한 번에 조회한다."""
+        if not keys:
+            return set()
+        pipe = self._redis.pipeline()
+        for key in keys:
+            pipe.exists(key)
+        results = await pipe.execute()
+        return {k for k, found in zip(keys, results) if found}
+
+    async def scan(self, pattern: str) -> list[str]:
+        cursor = 0
+        keys: list[str] = []
+        while True:
+            cursor, batch = await self._redis.scan(cursor, match=pattern, count=100)
+            keys.extend(str(k) for k in batch)
+            if cursor == 0:
+                return keys
 
     async def execute(self, payload: Payload) -> Result:
         action = payload.get("action")
@@ -237,7 +333,7 @@ class RedisAdapter:
 class MapNode:
     def __init__(self) -> None:
         self._redis: RedisAdapter | None = None
-        self._buffer: dict[str, dict[str, list[Any] | None]] = {}
+        self._buffer: OrderedDict[str, dict[str, list[Any] | None]] = OrderedDict()
 
     def bind_redis(self, redis_adapter: RedisAdapter) -> None:
         self._redis = redis_adapter
@@ -276,40 +372,43 @@ class MapNode:
         return [str(item) for item in cached]
 
     def _session_buffer(self, session_id: str) -> dict[str, list[Any] | None]:
-        return self._buffer.setdefault(session_id, {"markers": None, "routes": None})
+        if session_id in self._buffer:
+            self._buffer.move_to_end(session_id)
+        else:
+            self._buffer[session_id] = {"markers": None, "routes": None}
+            if len(self._buffer) > MAX_BUFFER_SESSIONS:
+                self._buffer.popitem(last=False)
+        return self._buffer[session_id]
 
     async def _get_json(self, key: str) -> list[Any]:
-        redis_adapter = _bound_redis(self._redis)
-        result = await redis_adapter.execute({"action": "get", "key": key})
-        return _json_list(result.get("value"))
+        return await _bound_redis(self._redis).get_json(key) or []
 
     async def _set_json(self, key: str, value: list[Any]) -> None:
-        redis_adapter = _bound_redis(self._redis)
-        await redis_adapter.execute({"action": "set", "key": key, "value": json.dumps(value, ensure_ascii=False)})
+        await _bound_redis(self._redis).set_json(key, value)
 
 
 class TripRangeNode:
     def __init__(self) -> None:
         self._redis: RedisAdapter | None = None
-        self._buffer: dict[str, list[Any]] = {}
+        self._buffer: OrderedDict[str, list[Any]] = OrderedDict()
 
     def bind_redis(self, redis_adapter: RedisAdapter) -> None:
         self._redis = redis_adapter
 
     async def set(self, session_id: str, ranges: list[Any]) -> None:
         self._buffer[session_id] = ranges
-        redis_adapter = _bound_redis(self._redis)
-        await redis_adapter.execute({
-            "action": "set",
-            "key": f"session:{session_id}:ranges",
-            "value": json.dumps(ranges, ensure_ascii=False),
-        })
+        self._buffer.move_to_end(session_id)
+        if len(self._buffer) > MAX_BUFFER_SESSIONS:
+            self._buffer.popitem(last=False)
+        await _bound_redis(self._redis).set_json(f"session:{session_id}:ranges", ranges)
 
     async def get(self, session_id: str) -> list[Any]:
         if session_id not in self._buffer:
-            redis_adapter = _bound_redis(self._redis)
-            result = await redis_adapter.execute({"action": "get", "key": f"session:{session_id}:ranges"})
-            self._buffer[session_id] = _json_list(result.get("value"))
+            self._buffer[session_id] = await _bound_redis(self._redis).get_json(f"session:{session_id}:ranges") or []
+            if len(self._buffer) > MAX_BUFFER_SESSIONS:
+                self._buffer.popitem(last=False)
+        else:
+            self._buffer.move_to_end(session_id)
         return list(self._buffer[session_id])
 
 
@@ -426,16 +525,6 @@ def _normalize_marker(marker: Mapping[str, Any]) -> dict[str, Any]:
         "lng": marker.get("lng", 0),
         "title": marker.get("title", ""),
     }
-
-
-def _json_list(value: Any) -> list[Any]:
-    if not value:
-        return []
-    try:
-        parsed = json.loads(str(value))
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
 
 
 def _bound_redis(redis_adapter: RedisAdapter | None) -> RedisAdapter:

@@ -40,6 +40,7 @@ export function attach(triggerBtn, badgeEl, {
   onMention      = () => {},
   onAccept       = () => {},
   onNewMessage   = () => {},
+  onSessionLeft  = () => {},
   pollIntervalMs = 30000,
 } = {}) {
   if (!triggerBtn) {
@@ -247,6 +248,14 @@ export function attach(triggerBtn, badgeEl, {
               if (!m) continue;
               try {
                 const ev = JSON.parse(m[1]);
+                if (ev.type === 'session_left') {
+                  onSessionLeft(ev.session_id);
+                  continue;
+                }
+                if (ev.type === 'analysis_update') {
+                  document.dispatchEvent(new CustomEvent('ta:analysis-update', { detail: ev.analysis }));
+                  continue;
+                }
                 if (ev.type !== 'notification') continue;
                 if (ev.sub_type === 'new_message') {
                   if (ev.session_id) onNewMessage(ev.session_id, ev);

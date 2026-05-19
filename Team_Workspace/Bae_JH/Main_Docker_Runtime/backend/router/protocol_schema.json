@@ -1,0 +1,119 @@
+{
+  "$comment": "라우터 통신 규약 스키마. protocol.py 와 1:1 대응.",
+
+  "flows": {
+    "P1_to_Core":    "PC1",
+    "P2_to_Core":    "PC2",
+    "Core_to_P2":    "PC2",
+    "Core_to_P3":    "PC3",
+    "P3_to_Core":    "PC3",
+    "P3_to_LLM":     "QUST",
+    "LLM_to_P3":     "LLM_Response"
+  },
+
+  "types": {
+
+    "PlaceInfo": {
+      "name":         "str",
+      "address_road": "str",
+      "lat":          "float",
+      "lon":          "float",
+      "description":  "str",
+      "category":     "str"
+    },
+
+    "T_MK_Item": {
+      "marker_id":  "str",
+      "place_info": "PlaceInfo"
+    },
+
+    "T_PN_Item": {
+      "date":       "str  // YYMMDD, 기본 000000",
+      "order":      "int  // 0-based",
+      "place":      "str",
+      "place_info": "PlaceInfo"
+    },
+
+    "sDB_Item": {
+      "place_id":       "str",
+      "name":           "str",
+      "main_category":  "str  // 식당|카페|관광지|포토스팟 등",
+      "sub_category":   "str  // 카카오 분류",
+      "address_road":   "str",
+      "lat":            "float",
+      "lon":            "float",
+      "region":         "str  // 북부|동부|서부|남부",
+      "region_depth_2": "str  // 제주시|서귀포시",
+      "alias":          "str"
+    },
+
+    "dDB_Item": {
+      "location":      "str  // 제주도 지역명",
+      "forecast_time": "str  // 09|12|15|18",
+      "summary":       "str",
+      "rain_prob":     "int  // 0~100",
+      "temperature":   "float",
+      "humidity":      "int  // 0~100",
+      "wind_speed":    "float"
+    },
+
+    "PC1": {
+      "$comment": "Port1 → Core (단방향, 하얀 화살표)",
+      "USR_ANAL": "str  // 유저 성향 분석 정보",
+      "SSN_TPC":  "str  // 세션 주제",
+      "SSN_PCL":  "str  // 과거 대화 기록"
+    },
+
+    "PC2": {
+      "$comment": "Port2 ↔ Core (양방향, 하얀 화살표)",
+      "CC":   "str           // 현재 대화 / 쿼리 / LLM 응답",
+      "T_SL": "str           // 선택지, 기본 공백",
+      "T_CD": "str[]         // 날짜 범위 [YYMMDD, ...]",
+      "T_MP": "str[]         // 지도 폴리곤 노드",
+      "T_MK": "T_MK_Item[]  // 마커 목록",
+      "T_PN": "T_PN_Item[7][10]  // 일정표 최대 7일×10항목"
+    },
+
+    "PC3": {
+      "$comment": "Core ↔ Port3 (양방향, 하얀 화살표). PC1 + PC2 합산.",
+      "USR_ANAL": "str",
+      "SSN_TPC":  "str",
+      "SSN_PCL":  "str",
+      "CC":   "str",
+      "T_SL": "str",
+      "T_CD": "str[]",
+      "T_MP": "str[]",
+      "T_MK": "T_MK_Item[]",
+      "T_PN": "T_PN_Item[7][10]"
+    },
+
+    "QUST": {
+      "$comment": "Port3 → LLM (단방향). PC3 + Kernel 조회 결과.",
+      "USR_ANAL": "str",
+      "SSN_TPC":  "str",
+      "SSN_PCL":  "str",
+      "CC":   "str",
+      "T_SL": "str",
+      "T_CD": "str[]",
+      "T_MP": "str[]",
+      "T_MK": "T_MK_Item[]",
+      "T_PN": "T_PN_Item[7][10]",
+      "sDB":  "sDB_Item[]",
+      "dDB":  "dDB_Item[]",
+      "PPL":  "str"
+    },
+
+    "LLM_Response": {
+      "$comment": "LLM → Port3. PC3 구조와 동일. to_pc3() 로 변환.",
+      "USR_ANAL": "str",
+      "SSN_TPC":  "str",
+      "SSN_PCL":  "str",
+      "CC":   "str",
+      "T_SL": "str",
+      "T_CD": "str[]",
+      "T_MP": "str[]",
+      "T_MK": "T_MK_Item[]",
+      "T_PN": "T_PN_Item[7][10]"
+    }
+  }
+}

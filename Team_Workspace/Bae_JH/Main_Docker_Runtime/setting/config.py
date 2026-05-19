@@ -28,33 +28,51 @@ GENERATION_PROMPT = (
 )
 
 # ==========================================
-# 2. 주제 및 이름 추출 에이전트 세트 (Topic)
+# 라우터 전용 프롬프트 (Port3 → LLM)
+# {usr_anal}, {ssn_tpc}, {ssn_pcl}, {cc} 자리표시자 사용
+# 출력: LLM_Response JSON (protocol.py 스펙 그대로)
 # ==========================================
-TOPIC_API_KEY = os.getenv("OPENAI_API_KEY")
-LLM_MODEL_TOPIC = os.getenv("LLM_MODEL_TOPIC", "gpt-4o-mini")
-
-# {history_text} 자리표시자 사용
-TOPIC_PROMPT = (
-    "너는 대화의 핵심을 파악하여 분류하는 AI야.\n"
-    "아래 대화 내역을 분석해서, 현재 대화의 '구체적인 여행 목적(주제)'과 'UI에 표시할 세션 이름(15자 이내)'을 JSON 형식으로만 응답해.\n"
-    "반드시 {{\"topic\": \"...\", \"name\": \"...\"}} 형태의 유효한 JSON만 출력해야 해.\n"
-    "[대화 내역]:\n{history_text}"
+ROUTER_PROMPT = (
+    "너는 여행 계획 도우미 AI야.\n"
+    "아래 정보를 참고해서 사용자 메시지에 답하고, 반드시 아래 JSON 형식으로만 출력해. 다른 말은 절대 쓰지 마.\n"
+    "\n"
+    "출력 형식:\n"
+    "{{\n"
+    '  "USR_ANAL": "<그대로 유지>",\n'
+    '  "SSN_TPC":  "<그대로 유지>",\n'
+    '  "SSN_PCL":  "<그대로 유지>",\n'
+    '  "CC":   "<사용자에게 보여줄 답변 텍스트>",\n'
+    '  "T_SL": "<선택지 문자열, 없으면 빈 문자열>",\n'
+    '  "T_CD": ["YYMMDD", ...],\n'
+    '  "T_MP": ["폴리곤 노드 ID", ...],\n'
+    '  "T_MK": [{{"marker_id":"...","place_info":{{"name":"","address_road":"","lat":0.0,"lon":0.0,"description":"","category":""}}}}],\n'
+    '  "T_PN": [[{{"date":"YYMMDD","order":0,"place":"장소명","place_info":{{"name":"","address_road":"","lat":0.0,"lon":0.0,"description":"","category":""}}}}]]\n'
+    "}}\n"
+    "\n"
+    "변경이 없는 위젯 필드는 빈 값(빈 문자열 또는 빈 배열)으로 두면 이전 상태가 유지된다.\n"
+    "\n"
+    "[개인화 정보]: {usr_anal}\n"
+    "[현재 대화 주제]: {ssn_tpc}\n"
+    "[과거 대화 기록]:\n{ssn_pcl}\n"
+    "[현재 사용자 메시지]: {cc}"
 )
-# 주의: 중괄호 자체가 문자에 포함되어야 할 때는 {{ }} 처럼 두 번 써야 에러가 안 납니다.
 
 # ==========================================
-# 3. 맥락 요약 에이전트 세트 (Summary)
+# 2. 맥락 흡수 에이전트 세트 (Absorb) — 버퍼 풀 때 topic+summary 통합
 # ==========================================
-SUMMARY_API_KEY = os.getenv("OPENAI_API_KEY")
-LLM_MODEL_SUMMARY = os.getenv("LLM_MODEL_SUMMARY", "gpt-4o-mini")
+ABSORB_API_KEY = os.getenv("OPENAI_API_KEY")
+LLM_MODEL_ABSORB = os.getenv("LLM_MODEL_ABSORB", "gpt-4o-mini")
 
 # {current_context}, {history_text} 자리표시자 사용
-SUMMARY_PROMPT = (
-    "너는 과거의 대화 내역을 핵심만 압축하여 요약하는 AI야.\n"
-    "기존에 요약된 맥락과 새롭게 추가된 대화 내역을 바탕으로, 봇이 앞으로의 대화에서 참고해야 할 핵심 정보를 하나의 문단으로 통합해서 요약해 줘.\n"
+# 출력 형식: 첫 줄 "title: <15자 이내>", 둘째 줄 "context: <한 문단 100자 이내>"
+ABSORB_PROMPT = (
+    "너는 여행 대화 세션을 관리하는 AI야.\n"
+    "기존 세션 주제와 요약, 새 대화를 통합하여 아래 형식으로만 응답해. 다른 말은 절대 쓰지 마.\n"
+    "title: <갱신된 세션 주제 이름, 20자 이내>\n"
+    "context: <봇이 앞으로 참고할 핵심 정보를 한 문단으로 100자 이내>\n"
+    "[현재 세션 주제]: {current_title}\n"
     "[기존 대화 요약]: {current_context}\n"
-    "[새로 추가된 대화 내역]:\n{history_text}\n"
-    "새로운 통합 요약문만 출력해."
+    "[새로 추가된 대화 내역]:\n{history_text}"
 )
 
 # ==========================================
@@ -62,7 +80,20 @@ SUMMARY_PROMPT = (
 # ==========================================
 PERSONAL_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_MODEL_PERSONAL = os.getenv("LLM_MODEL_PERSONAL", "gpt-4o-mini")
-PERSONAL_PROMPT = "" # 이 부분은 다음 단계에서 개인화 로직 설계 시 채우겠습니다.
+# {prev_summary}, {delta_type}, {delta_description}, {session_topics},
+# {travel_settings} 자리표시자 사용
+PERSONAL_PROMPT = (
+    "너는 여행 사용자 성향 분석 AI야.\n"
+    "아래 정보를 종합하여 정확히 두 문단으로만 출력해. 다른 말은 쓰지 마.\n"
+    "첫 번째 문단: 'AI 스타일 : '로 시작하여 AI가 이 사용자에게 어떤 말투·스타일로 응답해야 하는지 서술(200자 이내).\n"
+    "두 번째 문단: '사용자 스타일 : '로 시작하여 사용자의 여행 성향·관심사·목적을 서술(300자 이내).\n"
+    "[현재 분석 요약]: {prev_summary}\n"
+    "[변화 유형]: {delta_type}\n"
+    "[새로운 정보]: {delta_description}\n"
+    "[보유 세션 주제 목록]: {session_topics}\n"
+    "[AI 스타일 설정]: {style_settings}\n"
+    "[여행 취향 설정]: {travel_settings}"
+)
 
 # ==========================================
 # 5. 인증 설정 (JWT)

@@ -24,20 +24,12 @@ Redis Keys:
   session:{id}:msg_count → String (total_user_msg_count)
   user:{id}:profile      → Hash   (personalized_topics 필드)
 """
-import sys
 import json
-import asyncio
-from pathlib import Path
 from typing import List, Dict, Optional
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
 
 from setting.config import (
     LLM_MODEL_GENERATION, GENERATION_PROMPT, GENERATION_API_KEY,
-    LLM_MODEL_TOPIC, TOPIC_PROMPT, TOPIC_API_KEY,
-    LLM_MODEL_SUMMARY, SUMMARY_PROMPT, SUMMARY_API_KEY
+    LLM_MODEL_ABSORB, ABSORB_PROMPT, ABSORB_API_KEY,
 )
 
 from ...kernel.gpt_node import GptNode as TestNode
@@ -61,8 +53,7 @@ class SessionContainer:
         self.rename_threshold = rename_threshold
 
         self.generation_node = TestNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)
-        self.topic_node      = TestNode(model_name=LLM_MODEL_TOPIC,      api_key=TOPIC_API_KEY)
-        self.summary_node    = TestNode(model_name=LLM_MODEL_SUMMARY,    api_key=SUMMARY_API_KEY)
+        self.absorb_node     = TestNode(model_name=LLM_MODEL_ABSORB,     api_key=ABSORB_API_KEY)
 
         # 상태 (load_from_redis 후 채워짐)
         self.personalization_topic: str = ""
@@ -75,6 +66,7 @@ class SessionContainer:
         self.current_message: Optional[Dict] = None
 
         self.is_processing: bool = False
+        self.last_topic_change: Optional[dict] = None  # absorb 후 ChatService가 읽고 초기화
         self._redis = None   # load_from_redis() 호출 후 세팅
 
     # ──────────────────────────────────────────────────────────
@@ -136,25 +128,15 @@ class SessionContainer:
     # ──────────────────────────────────────────────────────────
 
     async def ingest_message(self, text: str) -> bool:
-        """사용자 메시지를 버퍼에 등록하고 주제 추론."""
+        """사용자 메시지를 버퍼에 등록."""
         if self.current_message:
             self.past_messages.append(self.current_message)
 
         self.current_message = {"role": "user", "content": text}
+        self.total_user_msg_count += 1
 
-        topic_result = await self._llm_update_topic(self.current_message, self.past_messages)
-        topic_changed = (
-            self.session_topic != topic_result["topic"]
-            or self.session_name != topic_result["name"]
-        )
-        self.session_topic = topic_result["topic"]
-        self.session_name  = topic_result["name"]
-
-        if topic_changed:
-            await self._save_meta()
         await self._save_buffer()
-
-        return topic_changed
+        return False
 
     async def generate_bot_response(self, query: str) -> str:
         """LLM 응답 생성 후 버퍼 저장."""
@@ -192,17 +174,27 @@ class SessionContainer:
     # ──────────────────────────────────────────────────────────
 
     async def _check_and_flush_buffer(self) -> None:
-        if len(self.past_messages) < self.max_buffer_size:
+        is_first  = self.total_user_msg_count == 1
+        buf_full  = len(self.past_messages) >= self.max_buffer_size
+
+        if not is_first and not buf_full:
             await self._save_buffer()
             return
 
-        print(f"[{self.session_id}] 버퍼 한계 도달. 요약 및 Flush.")
+        print(f"[{self.session_id}] {'첫 메시지 주제 설정.' if is_first else '버퍼 한계 도달. 요약 및 Flush.'}")
 
-        new_context = await self._llm_summarize_context(
-            self.session_context, self.past_messages
-        )
-        self.session_context = new_context
-        self.past_messages.clear()
+        prev_name = self.session_name
+        absorbed = await self._llm_absorb_context(self.session_context, self.past_messages)
+        self.session_context = absorbed["context"]
+
+        if not self.is_manual_title:
+            self.session_name  = absorbed["name"]
+            self.session_topic = absorbed["name"]
+            if self.session_name != prev_name:
+                self.last_topic_change = {"prev": prev_name, "new": self.session_name}
+
+        if buf_full:
+            self.past_messages.clear()
 
         await self._save_meta()
         await self._save_buffer()
@@ -219,36 +211,6 @@ class SessionContainer:
     # ──────────────────────────────────────────────────────────
     # LLM 연동
     # ──────────────────────────────────────────────────────────
-
-    async def _llm_update_topic(self, current_msg: dict, past_msgs: List[dict]) -> dict:
-        if current_msg.get("role") == "user":
-            self.total_user_msg_count += 1
-
-        suggested_name  = self.session_name
-        suggested_topic = self.session_topic
-
-        print(f"[{self.session_id}] 주제 갱신 LLM 가동. (총 {self.total_user_msg_count}번째 메시지)")
-
-        history_text = ""
-        for msg in past_msgs:
-            role_kr = "사용자" if msg["role"] == "user" else "AI"
-            history_text += f"{role_kr}: {msg['content']}\n"
-        history_text += f"사용자: {current_msg['content']}"
-
-        prompt = TOPIC_PROMPT.format(history_text=history_text)
-
-        try:
-            response = await self.topic_node.ask(prompt)
-            response_clean = response.replace("```json", "").replace("```", "").strip()
-            result = json.loads(response_clean)
-
-            suggested_topic = result.get("topic", suggested_topic)
-            if not self.is_manual_title:
-                suggested_name = result.get("name", suggested_name)
-        except Exception as e:
-            print(f"[{self.session_id}] 주제 갱신 노드 에러 (기존 값 유지): {e}")
-
-        return {"topic": suggested_topic, "name": suggested_name}
 
     async def _node_network_generate(self, p_topic: str, s_topic: str, s_context: str,
                                       past_msgs: List[dict], current_msg: dict) -> str:
@@ -273,21 +235,31 @@ class SessionContainer:
             return "AI 응답을 생성할 수 없습니다. 잠시 후 다시 시도해주세요."
         return result
 
-    async def _llm_summarize_context(self, current_context: str, past_msgs: List[dict]) -> str:
-        print(f"[{self.session_id}] 과거 버퍼 요약 LLM 가동.")
+    async def _llm_absorb_context(self, current_context: str, past_msgs: List[dict]) -> dict:
+        """버퍼 풀 시 호출. title + context를 한 번에 추출."""
+        print(f"[{self.session_id}] 버퍼 흡수 LLM 가동.")
 
         history_text = ""
         for msg in past_msgs:
             role_kr = "사용자" if msg["role"] == "user" else "AI"
             history_text += f"{role_kr}: {msg['content']}\n"
 
-        prompt = SUMMARY_PROMPT.format(
+        prompt = ABSORB_PROMPT.format(
+            current_title=self.session_name,
             current_context=current_context if current_context else "없음",
             history_text=history_text,
         )
 
+        fallback = {"name": self.session_name, "context": current_context}
         try:
-            response = await self.summary_node.ask(prompt)
-            return response.strip()
+            response = await self.absorb_node.ask(prompt)
+            name, context = self.session_name, current_context
+            for line in response.strip().splitlines():
+                if line.startswith("title:"):
+                    name = line[len("title:"):].strip()
+                elif line.startswith("context:"):
+                    context = line[len("context:"):].strip()
+            return {"name": name, "context": context}
         except Exception as e:
-            print(f"[{self.session_id}] 요약 노드 에러 (기존 값 유지): {e}")
+            print(f"[{self.session_id}] 흡수 노드 에러 (기존 값 유지): {e}")
+            return fallback

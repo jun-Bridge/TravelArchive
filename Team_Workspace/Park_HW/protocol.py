@@ -1,0 +1,394 @@
+"""
+protocol.py
+라우터 내부 JSON 포맷 선언 — 8개 클래스
+
+하얀 화살표(JSON 직렬화 필요) 구간:
+  Port1 → Core : PC1
+  Core ↔ Port2 : PC2
+  Core ↔ Port3 : PC3
+  Port3 ↔ Kernel(sDB/dDB/PPL/LLM) : QUST
+
+모든 클래스에 to_dict() / from_dict() 제공.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import List, Any
+
+
+# ═══════════════════════════════════════════════════
+# 이중 JSON 1 — PlaceInfo
+# ═══════════════════════════════════════════════════
+@dataclass
+class PlaceInfo:
+    name:         str   = ""
+    address_road: str   = ""
+    lat:          float = 0.0
+    lon:          float = 0.0
+    description:  str   = ""
+    category:     str   = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name":         self.name,
+            "address_road": self.address_road,
+            "lat":          self.lat,
+            "lon":          self.lon,
+            "description":  self.description,
+            "category":     self.category,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PlaceInfo:
+        return cls(
+            name=d.get("name", ""),
+            address_road=d.get("address_road", ""),
+            lat=d.get("lat", 0.0),
+            lon=d.get("lon", 0.0),
+            description=d.get("description", ""),
+            category=d.get("category", ""),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 이중 JSON 2 — T_MK_Item
+# T_MK : JSON[] = { STR, PLACE_INFO }
+# ═══════════════════════════════════════════════════
+@dataclass
+class T_MK_Item:
+    marker_id:  str       = ""
+    place_info: PlaceInfo = field(default_factory=PlaceInfo)
+
+    def to_dict(self) -> dict:
+        return {
+            "marker_id":  self.marker_id,
+            "place_info": self.place_info.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> T_MK_Item:
+        return cls(
+            marker_id=d.get("marker_id", ""),
+            place_info=PlaceInfo.from_dict(d.get("place_info", {})),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 이중 JSON 3 — T_PN_Item
+# T_PN : JSON[7][10] = { 날짜, 순서, 장소, 장소정보 }
+# ═══════════════════════════════════════════════════
+@dataclass
+class T_PN_Item:
+    date:       str       = "000000"  # YYMMDD
+    order:      int       = 0
+    place:      str       = ""
+    place_info: PlaceInfo = field(default_factory=PlaceInfo)
+
+    def to_dict(self) -> dict:
+        return {
+            "date":       self.date,
+            "order":      self.order,
+            "place":      self.place,
+            "place_info": self.place_info.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> T_PN_Item:
+        return cls(
+            date=d.get("date", "000000"),
+            order=d.get("order", 0),
+            place=d.get("place", ""),
+            place_info=PlaceInfo.from_dict(d.get("place_info", {})),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 이중 JSON 4 — sDB_Item
+# ═══════════════════════════════════════════════════
+@dataclass
+class sDB_Item:
+    place_id:       str   = ""
+    name:           str   = ""
+    main_category:  str   = ""
+    sub_category:   str   = ""
+    address_road:   str   = ""
+    lat:            float = 0.0
+    lon:            float = 0.0
+    region:         str   = ""
+    region_depth_2: str   = ""
+    alias:          str   = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "place_id":       self.place_id,
+            "name":           self.name,
+            "main_category":  self.main_category,
+            "sub_category":   self.sub_category,
+            "address_road":   self.address_road,
+            "lat":            self.lat,
+            "lon":            self.lon,
+            "region":         self.region,
+            "region_depth_2": self.region_depth_2,
+            "alias":          self.alias,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> sDB_Item:
+        return cls(
+            place_id=d.get("place_id", ""),
+            name=d.get("name", ""),
+            main_category=d.get("main_category", ""),
+            sub_category=d.get("sub_category", ""),
+            address_road=d.get("address_road", ""),
+            lat=d.get("lat", 0.0),
+            lon=d.get("lon", 0.0),
+            region=d.get("region", ""),
+            region_depth_2=d.get("region_depth_2", ""),
+            alias=d.get("alias", ""),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 이중 JSON 5 — dDB_Item
+# ═══════════════════════════════════════════════════
+@dataclass
+class dDB_Item:
+    location:      str   = ""
+    forecast_time: str   = ""
+    summary:       str   = ""
+    rain_prob:     int   = 0
+    temperature:   float = 0.0
+    humidity:      int   = 0
+    wind_speed:    float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "location":      self.location,
+            "forecast_time": self.forecast_time,
+            "summary":       self.summary,
+            "rain_prob":     self.rain_prob,
+            "temperature":   self.temperature,
+            "humidity":      self.humidity,
+            "wind_speed":    self.wind_speed,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> dDB_Item:
+        return cls(
+            location=d.get("location", ""),
+            forecast_time=d.get("forecast_time", ""),
+            summary=d.get("summary", ""),
+            rain_prob=d.get("rain_prob", 0),
+            temperature=d.get("temperature", 0.0),
+            humidity=d.get("humidity", 0),
+            wind_speed=d.get("wind_speed", 0.0),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 유틸 함수
+# ═══════════════════════════════════════════════════
+def _t_mk_to_list(items: List[T_MK_Item]) -> list:
+    return [i.to_dict() for i in items]
+
+def _t_mk_from_list(lst: list) -> List[T_MK_Item]:
+    return [T_MK_Item.from_dict(i) for i in lst]
+
+def _t_pn_to_list(matrix: List[List[T_PN_Item]]) -> list:
+    return [[item.to_dict() for item in row] for row in matrix]
+
+def _t_pn_from_list(lst: list) -> List[List[T_PN_Item]]:
+    return [[T_PN_Item.from_dict(item) for item in row] for row in lst]
+
+
+# ═══════════════════════════════════════════════════
+# 포맷 6 — PC1  (P1 → Core, 하얀 화살표)
+# ═══════════════════════════════════════════════════
+@dataclass
+class PC1:
+    USR_ANAL: str = ""
+    SSN_TPC:  str = ""
+    SSN_PCL:  str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "USR_ANAL": self.USR_ANAL,
+            "SSN_TPC":  self.SSN_TPC,
+            "SSN_PCL":  self.SSN_PCL,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PC1:
+        return cls(
+            USR_ANAL=d.get("USR_ANAL", ""),
+            SSN_TPC=d.get("SSN_TPC", ""),
+            SSN_PCL=d.get("SSN_PCL", ""),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 포맷 7 — PC2  (P2 ↔ Core, 하얀 화살표)
+# ═══════════════════════════════════════════════════
+@dataclass
+class PC2:
+    CC:   str                    = ""
+    T_SL: str                    = ""
+    T_CD: List[str]              = field(default_factory=list)
+    T_MP: List[str]              = field(default_factory=list)
+    T_MK: List[T_MK_Item]       = field(default_factory=list)
+    T_PN: List[List[T_PN_Item]] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "CC":   self.CC,
+            "T_SL": self.T_SL,
+            "T_CD": self.T_CD,
+            "T_MP": self.T_MP,
+            "T_MK": _t_mk_to_list(self.T_MK),
+            "T_PN": _t_pn_to_list(self.T_PN),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PC2:
+        return cls(
+            CC=d.get("CC", ""),
+            T_SL=d.get("T_SL", ""),
+            T_CD=d.get("T_CD", []),
+            T_MP=d.get("T_MP", []),
+            T_MK=_t_mk_from_list(d.get("T_MK", [])),
+            T_PN=_t_pn_from_list(d.get("T_PN", [])),
+        )
+
+
+# ═══════════════════════════════════════════════════
+# 포맷 8 — PC3  (Core ↔ P3, 하얀 화살표)
+# ═══════════════════════════════════════════════════
+@dataclass
+class PC3:
+    # PC1 필드
+    USR_ANAL: str = ""
+    SSN_TPC:  str = ""
+    SSN_PCL:  str = ""
+    # PC2 필드
+    CC:   str                    = ""
+    T_SL: str                    = ""
+    T_CD: List[str]              = field(default_factory=list)
+    T_MP: List[str]              = field(default_factory=list)
+    T_MK: List[T_MK_Item]       = field(default_factory=list)
+    T_PN: List[List[T_PN_Item]] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "USR_ANAL": self.USR_ANAL,
+            "SSN_TPC":  self.SSN_TPC,
+            "SSN_PCL":  self.SSN_PCL,
+            "CC":       self.CC,
+            "T_SL":     self.T_SL,
+            "T_CD":     self.T_CD,
+            "T_MP":     self.T_MP,
+            "T_MK":     _t_mk_to_list(self.T_MK),
+            "T_PN":     _t_pn_to_list(self.T_PN),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PC3:
+        return cls(
+            USR_ANAL=d.get("USR_ANAL", ""),
+            SSN_TPC=d.get("SSN_TPC", ""),
+            SSN_PCL=d.get("SSN_PCL", ""),
+            CC=d.get("CC", ""),
+            T_SL=d.get("T_SL", ""),
+            T_CD=d.get("T_CD", []),
+            T_MP=d.get("T_MP", []),
+            T_MK=_t_mk_from_list(d.get("T_MK", [])),
+            T_PN=_t_pn_from_list(d.get("T_PN", [])),
+        )
+
+    def to_pc2(self) -> PC2:
+        """PC3에서 PC2 필드만 추출 (split 시 사용)"""
+        return PC2(
+            CC=self.CC,
+            T_SL=self.T_SL,
+            T_CD=self.T_CD,
+            T_MP=self.T_MP,
+            T_MK=self.T_MK,
+            T_PN=self.T_PN,
+        )
+
+
+# ═══════════════════════════════════════════════════
+# QUST — P3 → LLM (PC3 + sDB/dDB/PPL)
+# ═══════════════════════════════════════════════════
+@dataclass
+class QUST:
+    USR_ANAL: str = ""
+    SSN_TPC:  str = ""
+    SSN_PCL:  str = ""
+    CC:   str                    = ""
+    T_SL: str                    = ""
+    T_CD: List[str]              = field(default_factory=list)
+    T_MP: List[str]              = field(default_factory=list)
+    T_MK: List[T_MK_Item]       = field(default_factory=list)
+    T_PN: List[List[T_PN_Item]] = field(default_factory=list)
+    sDB:  List[sDB_Item]        = field(default_factory=list)
+    dDB:  List[dDB_Item]        = field(default_factory=list)
+    PPL:  str                   = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "USR_ANAL": self.USR_ANAL,
+            "SSN_TPC":  self.SSN_TPC,
+            "SSN_PCL":  self.SSN_PCL,
+            "CC":       self.CC,
+            "T_SL":     self.T_SL,
+            "T_CD":     self.T_CD,
+            "T_MP":     self.T_MP,
+            "T_MK":     _t_mk_to_list(self.T_MK),
+            "T_PN":     _t_pn_to_list(self.T_PN),
+            "sDB":      [i.to_dict() for i in self.sDB],
+            "dDB":      [i.to_dict() for i in self.dDB],
+            "PPL":      self.PPL,
+        }
+
+
+# ═══════════════════════════════════════════════════
+# LLM_Response — LLM → P3 (PC3 구조와 동일)
+# ═══════════════════════════════════════════════════
+@dataclass
+class LLM_Response:
+    USR_ANAL: str = ""
+    SSN_TPC:  str = ""
+    SSN_PCL:  str = ""
+    CC:   str                    = ""
+    T_SL: str                    = ""
+    T_CD: List[str]              = field(default_factory=list)
+    T_MP: List[str]              = field(default_factory=list)
+    T_MK: List[T_MK_Item]       = field(default_factory=list)
+    T_PN: List[List[T_PN_Item]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> LLM_Response:
+        return cls(
+            USR_ANAL=d.get("USR_ANAL", ""),
+            SSN_TPC=d.get("SSN_TPC", ""),
+            SSN_PCL=d.get("SSN_PCL", ""),
+            CC=d.get("CC", ""),
+            T_SL=d.get("T_SL", ""),
+            T_CD=d.get("T_CD", []),
+            T_MP=d.get("T_MP", []),
+            T_MK=_t_mk_from_list(d.get("T_MK", [])),
+            T_PN=_t_pn_from_list(d.get("T_PN", [])),
+        )
+
+    def to_pc3(self) -> PC3:
+        return PC3(
+            USR_ANAL=self.USR_ANAL,
+            SSN_TPC=self.SSN_TPC,
+            SSN_PCL=self.SSN_PCL,
+            CC=self.CC,
+            T_SL=self.T_SL,
+            T_CD=self.T_CD,
+            T_MP=self.T_MP,
+            T_MK=self.T_MK,
+            T_PN=self.T_PN,
+        )

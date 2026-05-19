@@ -39,6 +39,10 @@ class AuthUnit:
         return await AuthManager.logout(refresh_token, user_id, manager)
 
     @staticmethod
+    async def logout_all_devices(user_id: str, manager: Any) -> None:
+        return await AuthManager.logout_all_devices(user_id, manager)
+
+    @staticmethod
     async def refresh_token(refresh_token: str, manager: Any) -> Any:
         return await AuthManager.refresh_token(refresh_token, manager)
 

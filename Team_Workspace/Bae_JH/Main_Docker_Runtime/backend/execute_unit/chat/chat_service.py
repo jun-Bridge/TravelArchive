@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re as _re
+import time
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -21,7 +22,25 @@ from ..system.system_notify import NotifyService
 from .chat_flush_service import FlushService
 from .chat_session_container import SessionContainer
 
-_temp_sessions: Dict[str, SessionContainer] = {}
+# 임시 세션 저장소 — (container, last_access_ts) 쌍으로 보관
+_temp_sessions: Dict[str, tuple[SessionContainer, float]] = {}
+_TEMP_SESSION_TTL = 3600  # 1시간 미사용 시 제거
+_BACKGROUND_TASKS: set[asyncio.Task] = set()  # create_task GC 방지
+
+
+def _evict_temp_sessions() -> None:
+    now = time.monotonic()
+    expired = [k for k, (_, ts) in _temp_sessions.items() if now - ts > _TEMP_SESSION_TTL]
+    for k in expired:
+        _temp_sessions.pop(k, None)
+
+
+def _spawn_task(coro) -> asyncio.Task:
+    """create_task + GC 방지 참조 관리."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 
 
 class ChatService:
@@ -29,9 +48,12 @@ class ChatService:
     @staticmethod
     async def send_temp_message(temp_session_id: str, message: str) -> StreamingResponse:
         """비로그인 임시채팅 전용. DB/Redis 저장 없음."""
+        _evict_temp_sessions()
+        now_ts = time.monotonic()
         if temp_session_id not in _temp_sessions:
-            _temp_sessions[temp_session_id] = SessionContainer(session_id=temp_session_id, user_id="TEMP")
-        container = _temp_sessions[temp_session_id]
+            _temp_sessions[temp_session_id] = (SessionContainer(session_id=temp_session_id, user_id="TEMP"), now_ts)
+        container, _ = _temp_sessions[temp_session_id]
+        _temp_sessions[temp_session_id] = (container, now_ts)  # 접근 시마다 TTL 갱신
 
         async def _stream():
             response_text = await container.process_user_input(message)
@@ -49,17 +71,41 @@ class ChatService:
     @staticmethod
     async def create_session(first_message: str, mode: Optional[str], user_id: str, trip_id: Optional[str], redis: Any, manager: Any) -> dict[str, Any]:
         session_id = "session_" + str(uuid.uuid4())[:8]
-        title = first_message[:20] + "..." if len(first_message) > 20 else first_message
+        title = "새 세션"
         if not trip_id:
             trip_id = await Cacher.ensure_misc_trip(user_id, redis, manager)
 
-        await Cacher.create_session(session_id, user_id, {"title": title, "trip_id": trip_id}, redis, manager)
-
         trip_color = None
+        trip_title = None
+        trip_is_misc = False
         for trip in await Cacher.get_trip_list(user_id, redis, manager):
             if trip.get("trip_id") == trip_id:
                 trip_color = trip.get("color")
+                trip_title = trip.get("title")
+                trip_is_misc = trip.get("is_misc", False)
                 break
+
+        now = datetime.now(tz=timezone.utc).isoformat()
+        list_entry = {
+            "session_id": session_id,
+            "title": title,
+            "topic": "",
+            "color": None,
+            "trip_id": trip_id,
+            "is_manual_title": False,
+            "created_at": now,
+            "updated_at": now,
+            "trip_color": trip_color,
+            "trip_title": trip_title,
+            "trip_is_misc": trip_is_misc,
+            "user_role": "master",
+            "participant_count": 1,
+            "unread_count": 0,
+        }
+        # Redis-first: 사용자 세션 목록에 즉시 추가
+        await Cacher.session_list_add(user_id, list_entry, redis)
+        # PG 영속화는 fire-and-forget으로 만들기 위해 emit (await는 유지: session_participants 정합성 필요)
+        await Cacher.create_session(session_id, user_id, {"title": title, "trip_id": trip_id}, redis, manager)
 
         return {
             "id": session_id,
@@ -74,12 +120,27 @@ class ChatService:
 
     @staticmethod
     async def leave_session(session_id: str, user_id: str, redis: Any, manager: Any) -> dict[str, bool]:
+        # Redis-first: 사용자 세션 목록에서 즉시 제거
+        await Cacher.session_list_remove(user_id, session_id, redis)
+        # PG sync (fire-and-forget within event handler)
         await Cacher.leave_session(session_id, user_id, redis, manager)
+        NotifyService.push_to_user(user_id, {
+            "type": "session_left",
+            "session_id": session_id,
+        })
         return {"success": True}
 
     @staticmethod
     async def delete_session(session_id: str, user_id: str, redis: Any, manager: Any) -> dict[str, Any]:
-        result = await Cacher.leave_as_master(session_id, user_id, redis, manager)
+        from fastapi import HTTPException
+        # Redis-first: 즉시 사용자 목록에서 제거 → 클라이언트가 새 목록 받으면 사라진 상태
+        await Cacher.session_list_remove(user_id, session_id, redis)
+        try:
+            result = await Cacher.leave_as_master(session_id, user_id, redis, manager)
+        except HTTPException as e:
+            if e.status_code in (404, 403):
+                return {"success": True, "deleted": True}
+            raise
         if result["deleted"]:
             NotifyService.push_to_session(session_id, json.dumps({
                 "type": "kicked",
@@ -88,10 +149,18 @@ class ChatService:
             }, ensure_ascii=False))
             await FlushService.flush_single_session(session_id, redis, manager)
         else:
+            new_master_uid = result.get("new_master")
+            if new_master_uid:
+                # 새 마스터의 Redis 세션 목록에서 user_role 갱신 + 참여자 수 -1
+                await Cacher.session_list_update(
+                    new_master_uid, session_id,
+                    {"user_role": "master"},
+                    redis,
+                )
             NotifyService.push_to_session(session_id, json.dumps({
                 "type": "new_master",
                 "session_id": session_id,
-                "user_id": result["new_master"],
+                "user_id": new_master_uid,
             }, ensure_ascii=False))
         return {"success": True, "deleted": result["deleted"]}
 
@@ -103,11 +172,20 @@ class ChatService:
         if role != "master":
             raise HTTPException(status_code=403, detail="마스터만 개인 전환을 할 수 있습니다")
 
+        # kicked될 멤버 목록 미리 확보 → 각자의 Redis 세션 목록에서 제거 (Redis-first)
+        participants = await Cacher.get_session_participants(session_id, redis, manager)
+        kicked_uids = [p["user_id"] for p in participants
+                       if p.get("user_id") not in (user_id, "bot") and p.get("role") != "master"]
+        for uid in kicked_uids:
+            await Cacher.session_list_remove(uid, session_id, redis)
+        # 마스터의 list_entry는 participant_count = 1로 갱신
+        await Cacher.session_list_update(user_id, session_id, {"participant_count": 1}, redis)
+
         NotifyService.push_to_session(session_id, json.dumps({
             "type": "kicked",
             "session_id": session_id,
             "reason": "master_converted_to_personal",
-        }, ensure_ascii=False))
+        }, ensure_ascii=False), exclude_user=user_id)
         await Cacher.remove_non_master_participants(session_id, redis, manager)
         return {"success": True}
 
@@ -117,6 +195,9 @@ class ChatService:
         meta["name"] = title
         meta["is_manual_title"] = "true"
         await Cacher.cache_session_meta(session_id, meta, redis)
+        # Redis 세션 목록: 모든 참여자 항목 갱신 (팀 세션이면 다른 멤버도)
+        await ChatService._sync_title_to_redis_list(session_id, title, redis, manager)
+        await Cacher.session_list_update(user_id, session_id, {"is_manual_title": True}, redis)
         await Cacher.update_session_record(session_id, {"title": title, "is_manual_title": True}, redis, manager)
         NotifyService.push_to_session(session_id, json.dumps({
             "type": "title_updated",
@@ -127,7 +208,17 @@ class ChatService:
 
     @staticmethod
     async def update_session_color(session_id: str, color: str, user_id: str, redis: Any, manager: Any) -> dict[str, str]:
+        participants = await Cacher.get_session_participants(session_id, redis, manager)
+        for p in participants:
+            uid = p.get("user_id")
+            if uid and uid != "bot":
+                await Cacher.session_list_update(uid, session_id, {"color": color}, redis)
         await Cacher.update_session_record(session_id, {"color": color}, redis, manager)
+        NotifyService.push_to_session(session_id, json.dumps({
+            "type": "color_updated",
+            "session_id": session_id,
+            "color": color,
+        }, ensure_ascii=False), exclude_user=user_id)
         return {"success": True, "color": color}
 
     @staticmethod
@@ -191,7 +282,7 @@ class ChatService:
         if bot_match:
             return await ChatService._stream_bot_response(session_id, bot_match.group(1).strip(), message, user_id, redis, manager)
 
-        asyncio.create_task(ChatService._run_ingest(session_id, user_id, message, redis))
+        _spawn_task(ChatService._run_ingest(session_id, user_id, message, redis))
 
         async def _ack():
             yield b''
@@ -246,18 +337,24 @@ class ChatService:
 
     @staticmethod
     async def _run_ingest(session_id: str, user_id: str, message: str, redis: Any) -> None:
-        """백그라운드: SessionContainer에 메시지를 등록하고 주제를 추론."""
+        """백그라운드: 팀 메시지를 SessionContainer 버퍼에 등록."""
         try:
             container = await ChatService._get_container(session_id, user_id, redis)
-            title_changed = await container.ingest_message(message)
-            if title_changed:
-                NotifyService.push_to_session(session_id, json.dumps({
-                    "type": "title_updated",
-                    "session_id": session_id,
-                    "title": container.session_name,
-                }, ensure_ascii=False))
+            await container.ingest_message(message)
         except Exception as e:
             print(f"[ChatService._run_ingest] {session_id} 오류: {e}")
+
+    @staticmethod
+    async def _sync_title_to_redis_list(session_id: str, new_title: str, redis: Any, manager: Any) -> None:
+        """absorb 자동 제목 변경 시 모든 참여자의 Redis 세션 목록 항목 갱신."""
+        try:
+            participants = await Cacher.get_session_participants(session_id, redis, manager)
+            for p in participants:
+                uid = p.get("user_id")
+                if uid and uid != "bot":
+                    await Cacher.session_list_update(uid, session_id, {"title": new_title}, redis)
+        except Exception as e:
+            print(f"[ChatService._sync_title_to_redis_list] {session_id} 오류: {e}")
 
     @staticmethod
     async def _stream_bot_response(session_id: str, query: str, full_message: str, triggering_user_id: str, redis: Any, manager: Any) -> StreamingResponse:
@@ -266,14 +363,61 @@ class ChatService:
         async def _stream():
             try:
                 container = await ChatService._get_container(session_id, triggering_user_id, redis)
-                title_changed = await container.ingest_message(full_message)
+                title_changed = await container.ingest_message(query)
                 if title_changed:
+                    await ChatService._sync_title_to_redis_list(session_id, container.session_name, redis, manager)
                     NotifyService.push_to_session(session_id, json.dumps({
                         "type": "title_updated",
                         "session_id": session_id,
                         "title": container.session_name,
                     }, ensure_ascii=False))
-                bot_text = await container.generate_bot_response(query)
+                from ...router.core import Core
+                from ...router.port1 import Port1
+                from ...router.port2 import Port2
+                from ...router.port3 import Port3
+                from ..widget.widget_trip_select import TripSelectWidget
+                from ..widget.widget_trip_clander import TripClanderWidget
+                from ..widget.widget_trip_map import TripMapWidget
+                from ..widget.widget_trip_marker import TripMarkerWidget
+                from ..widget.widget_trip_plan import TripPlanWidget
+
+                t_sl = TripSelectWidget()
+                t_cd = TripClanderWidget()
+                t_mp = TripMapWidget()
+                t_mk = TripMarkerWidget()
+                t_pn = TripPlanWidget()
+
+                p1 = Port1(container, container.personalization_topic)
+                p2 = Port2(None, container, t_sl, t_cd, t_mp, t_mk, t_pn)
+                p3 = Port3(None)
+                core = Core(p1, p2, p3)
+                p2.core = core
+                p3.core = core
+
+                await p2.on_user_message()
+                bot_text = p2.last_response
+
+                # 유저 메시지 + 봇 응답 모두 버퍼에 쌓고 Redis 저장
+                if container.current_message:
+                    container.past_messages.append(container.current_message)
+                container.past_messages.append({"role": "bot", "content": bot_text})
+                container.current_message = None
+                await container._check_and_flush_buffer()
+                if container.last_topic_change:
+                    await ChatService._sync_title_to_redis_list(session_id, container.session_name, redis, manager)
+                    NotifyService.push_to_session(session_id, json.dumps({
+                        "type": "title_updated",
+                        "session_id": session_id,
+                        "title": container.session_name,
+                    }, ensure_ascii=False))
+                    from ...memory.events import SessionTopicChangedEvent
+                    manager.emit(SessionTopicChangedEvent(
+                        user_id=triggering_user_id,
+                        session_id=session_id,
+                        prev_topic=container.last_topic_change["prev"],
+                        new_topic=container.last_topic_change["new"],
+                    ))
+                    container.last_topic_change = None
             except Exception as e:
                 print(f"[ChatService._stream_bot_response] {session_id} 오류: {e}")
                 bot_text = "죄송합니다, 응답을 생성할 수 없습니다."

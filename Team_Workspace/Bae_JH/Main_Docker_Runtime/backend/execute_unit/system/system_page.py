@@ -72,11 +72,12 @@ class PageService:
         """설정 페이지 진입: 프로필·AI스타일·여행취향·UI 전체 반환."""
         all_settings = await UserSetting.get_all(user_id, redis)
         return {
-            "status":  "success",
-            "data":    all_settings["ui"],
-            "profile": all_settings["profile"],
-            "style":   all_settings["style"],
-            "travel":  all_settings["travel"],
+            "status":   "success",
+            "data":     all_settings["ui"],
+            "profile":  all_settings["profile"],
+            "style":    all_settings["style"],
+            "travel":   all_settings["travel"],
+            "analysis": all_settings.get("analysis", ""),
         }
 
     @staticmethod

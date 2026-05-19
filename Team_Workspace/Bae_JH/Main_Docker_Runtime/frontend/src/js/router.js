@@ -72,8 +72,10 @@ const HISTORY_PAGE = 40;
 function _msgRole(msg, myId) {
   if (msg.sender_id && msg.sender_id === myId) return 'user';
   if (msg.sender_id) return 'bot';
-  const raw = msg.role || msg.sender_type || '';
-  return (raw === 'assistant' || raw === 'bot') ? 'bot' : (raw || 'bot');
+  const raw = (msg.role || msg.sender_type || '').toLowerCase();
+  if (raw === 'assistant' || raw === 'bot' || raw === 'ai') return 'bot';
+  if (raw === 'user') return 'user';
+  return 'bot';
 }
 
 function _renderMsgs(chatHistory, msgs, myId, isTeam, sessionId) {
@@ -241,9 +243,9 @@ export async function router(state, elements) {
             state.currentSessionId = null;
             state.currentParticipantCount = null;
             window.location.hash = '#/';
-            import('./ui.js').then(({ showToast }) =>
-              showToast('세션에서 퇴출되었습니다.')
-            );
+            SessionManager.init(elements, state);
+            const kickMsg = event.reason === 'session_deleted' ? '세션이 삭제되었습니다.' : '세션에서 퇴출되었습니다.';
+            import('./ui.js').then(({ showToast }) => showToast(kickMsg));
           } else if (event.type === 'new_master') {
             // 마스터 승계: 내가 새 마스터가 됐으면 UI 새로고침
             const myId = TokenManager.getUserId();
@@ -258,10 +260,13 @@ export async function router(state, elements) {
               );
             }
           } else if (event.type === 'title_updated') {
-            // 세션 제목 실시간 반영
             import('./ui.js').then(({ updateSidebarSessionTitle }) =>
               updateSidebarSessionTitle(event.session_id, event.title)
             );
+          } else if (event.type === 'color_updated') {
+            const wrapper = document.querySelector(`.sidebar-item-wrapper[data-session-id="${event.session_id}"]`);
+            const bar = wrapper?.querySelector('.session-color-bar');
+            if (bar) bar.style.background = event.color;
           } else if (event.type === 'notification') {
             // 알림 실시간 뱃지 갱신
             const badge = document.getElementById('notifBadge');

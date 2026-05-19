@@ -250,6 +250,22 @@ function buildTravelStyleHTML() {
   `;
 }
 
+function buildAnalysisHTML() {
+  return `
+    <div class="card-base">
+      <label class="label-base">AI 분석 요약</label>
+
+      <div class="form-row">
+        <label class="form-label" for="analysisSummary">
+          <span class="form-hint">대화와 설정을 바탕으로 AI가 추론한 사용자 성향. 직접 수정할 수 없으며 자동 갱신됩니다.</span>
+        </label>
+        <textarea id="analysisSummary" class="input-base textarea-base" rows="6" disabled
+          placeholder="아직 분석 데이터가 없습니다. 대화를 진행하면 자동으로 생성됩니다."></textarea>
+      </div>
+    </div>
+  `;
+}
+
 function buildAccountMgmtHTML(userType) {
   const isKKO = userType === 'KKO';
   return `
@@ -376,6 +392,9 @@ async function loadPersonalSettings(container) {
   } catch { return; }
   if (!settings || typeof settings !== 'object') return;
 
+  console.log('[account] loadPersonalSettings connected=', container.isConnected, 'style=', settings.style, 'travel=', settings.travel);
+  if (!container.isConnected) return;
+
   // 프로필
   const profile = settings.profile || {};
   setVal(container, 'settingProfile',  profile.bio);
@@ -393,7 +412,10 @@ async function loadPersonalSettings(container) {
   }
 
   // 추가 연락수단
-  (profile.extra_contacts || []).forEach(c => addExtraContact(container, c));
+  const _contacts = Array.isArray(profile.extra_contacts)
+    ? profile.extra_contacts
+    : (typeof profile.extra_contacts === 'string' ? JSON.parse(profile.extra_contacts || '[]') : []);
+  _contacts.forEach(c => addExtraContact(container, c));
 
   // AI 스타일
   const style = settings.style || {};
@@ -416,6 +438,9 @@ async function loadPersonalSettings(container) {
   setToggle(container,'petFriendlyToggle', travel.pet_friendly);
   setChips(container, 'disabilityGroup',   travel.disabilities  || []);
   setVal(container,   'disabilityOther',   travel.disability_other);
+
+  // AI 분석 요약 (읽기 전용)
+  setVal(container, 'analysisSummary', settings.analysis || '');
 }
 
 // ================================================================
@@ -663,6 +688,7 @@ function renderLoggedInView(container) {
       ${buildProfileHTML()}
       ${buildStyleHTML()}
       ${buildTravelStyleHTML()}
+      ${buildAnalysisHTML()}
 
       <!-- 계정 관리 -->
       ${sectionTitle('계정 관리')}
@@ -685,12 +711,22 @@ function renderLoggedInView(container) {
     e.target.disabled = true;
     e.target.textContent = '로그아웃 중...';
     await BackendHooks.logout();
+    container._removeAnalysisListener?.();
     document.dispatchEvent(new CustomEvent('ta:logout'));
     renderLoginView(container);
   });
 
   // 서버에서 설정 불러오기
   loadPersonalSettings(container).catch(console.error);
+
+  // 분석 실시간 업데이트
+  const _onAnalysisUpdate = (e) => {
+    const el = container.querySelector('#analysisSummary');
+    if (el) el.value = e.detail || '';
+  };
+  document.addEventListener('ta:analysis-update', _onAnalysisUpdate);
+  container._removeAnalysisListener = () =>
+    document.removeEventListener('ta:analysis-update', _onAnalysisUpdate);
 }
 
 // ================================================================

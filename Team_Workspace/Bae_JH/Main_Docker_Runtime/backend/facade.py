@@ -188,8 +188,8 @@ async def logout(req: LogoutRequest, request: Request, user_id: Optional[str] = 
 
 
 @app.post("/api/auth/logout/all")
-async def logout_all_devices(req: LogoutRequest, request: Request, user_id: str = Depends(get_current_user)):
-    await AuthUnit.logout(req.refresh_token, user_id, request.app.state.manager)
+async def logout_all_devices(request: Request, user_id: str = Depends(get_current_user)):
+    await AuthUnit.logout_all_devices(user_id, request.app.state.manager)
     return {"status": "success", "message": "모든 기기에서 로그아웃되었습니다"}
 
 
@@ -284,6 +284,10 @@ async def get_app_context(request: Request, user_id: str = Depends(get_optional_
 
 @app.get("/api/settings")
 async def get_settings(request: Request, user_id: str = Depends(get_current_user)):
+    from .memory.events import CacheMissEvent
+    await request.app.state.manager.emit_and_wait(
+        CacheMissEvent(resource="user_profile", user_id=user_id)
+    )
     return await SystemUnit.get_settings(request.app.state.redis, user_id)
 
 
@@ -321,11 +325,6 @@ async def update_trip(trip_id: str, req: TripUpdateRequest, request: Request, us
 async def delete_trip(trip_id: str, request: Request, user_id: str = Depends(get_current_user)):
     return await SystemUnit.delete_trip(request.app.state.redis, request.app.state.manager, trip_id, user_id)
 
-
-@app.get("/api/plans")
-async def get_plan_list(request: Request, user_id: str = Depends(get_current_user)):
-    result = await SystemUnit.get_trip_list(request.app.state.redis, request.app.state.manager, user_id)
-    return {"trips": result["trips"], "plans": result["trips"]}
 
 
 @app.get("/api/teams")
@@ -428,10 +427,6 @@ async def send_message(session_id: str, req: MessageRequest, request: Request, u
     return await ChatUnit.send_message(session_id, req.message, user_id, request.app.state.redis, request.app.state.manager)
 
 
-@app.post("/api/sessions/{session_id}/team-message")
-async def send_team_message(session_id: str, req: MessageRequest, request: Request, user_id: str = Depends(get_current_user)):
-    return await ChatUnit.send_message(session_id, req.message, user_id, request.app.state.redis, request.app.state.manager)
-
 
 @app.post("/api/sessions/{session_id}/read")
 async def mark_session_read(session_id: str, request: Request, user_id: str = Depends(get_current_user)):
@@ -524,15 +519,16 @@ async def clear_viewed_notifications(request: Request, user_id: str = Depends(ge
     return await SystemUnit.clear_viewed_notifications(request.app.state.redis, request.app.state.manager, user_id)
 
 
+_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+
+
 async def _require_admin(request: Request, user_id: str = Depends(get_current_user)):
     from fastapi import HTTPException
-    if user_id.endswith(":admin") or user_id == "admin":
-        return user_id
     fut = asyncio.get_running_loop().create_future()
     from .memory.events import AdminCheckEmailEvent
     request.app.state.manager.emit(AdminCheckEmailEvent(user_id=user_id, future=fut), priority=True)
     email = await fut
-    if email == "test@test.com":
+    if _ADMIN_EMAIL and email == _ADMIN_EMAIL:
         return user_id
     raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
 

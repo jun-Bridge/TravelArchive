@@ -74,10 +74,11 @@ class UserSetting:
 
     @staticmethod
     async def get_all(user_id: str, redis: Any) -> dict:
-        profile = await Cacher.get_user_profile(user_id, redis)
-        style   = await Cacher.get_user_style(user_id, redis)
-        travel  = await Cacher.get_user_travel(user_id, redis)
-        ui      = await Cacher.get_ui_settings(user_id, redis)
+        profile  = await Cacher.get_user_profile(user_id, redis)
+        style    = await Cacher.get_user_style(user_id, redis)
+        travel   = await Cacher.get_user_travel(user_id, redis)
+        ui       = await Cacher.get_ui_settings(user_id, redis)
+        analysis = await Cacher.get_user_analysis(user_id, redis)
         return {
             "profile": {
                 "bio":            profile.get("bio"),
@@ -85,7 +86,8 @@ class UserSetting:
                 "email1":         profile.get("email1", profile.get("email")),
                 "extra_contacts": profile.get("extra_contacts") or [],
             },
-            "style":  style,
-            "travel": travel,
-            "ui":     ui,
+            "style":    style,
+            "travel":   travel,
+            "ui":       ui,
+            "analysis": analysis or "",
         }

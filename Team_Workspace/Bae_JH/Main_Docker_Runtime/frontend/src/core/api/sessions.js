@@ -128,21 +128,17 @@ export async function markSessionRead(sessionId) {
   } catch { /* silent */ }
 }
 
-/** 페이지 언로드 시 세션 메모리 → DB 플러시 (sendBeacon) */
+/** 페이지 언로드 시 세션 메모리 → DB 플러시 */
 export function flushSessions() {
   const token = TokenManager.getAccessToken();
   if (!token) return;
-  const data = JSON.stringify({});
-  if (navigator.sendBeacon) {
-    navigator.sendBeacon('/api/sessions/flush', new Blob([data], { type: 'application/json' }));
-  } else {
-    fetch('/api/sessions/flush', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: data,
-      keepalive: true,
-    }).catch(() => {});
-  }
+  // sendBeacon은 Authorization 헤더를 보낼 수 없어 401 실패 → fetch keepalive 사용
+  fetch('/api/sessions/flush', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({}),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 /**

@@ -103,14 +103,15 @@ export const SessionManager = {
         ? '세션에서 나가시겠습니까? 팀원이 있으면 가장 오래된 팀원이 마스터가 됩니다.'
         : '세션을 삭제하시겠습니까?';
       if (confirm(confirmMsg)) {
+        wrapper.remove();
+        if (state.currentSessionId === sessionId) window.location.hash = '#/';
         try {
           const response = await BackendHooks.deleteSession(sessionId);
-          if (response.success) {
-            wrapper.remove();
-            showToast(response.deleted ? '세션이 삭제되었습니다.' : '세션에서 나갔습니다.');
-            if (state.currentSessionId === sessionId) window.location.hash = '#/';
-          }
-        } catch (error) { console.error(error); }
+          showToast(response.deleted ? '세션이 삭제되었습니다.' : '세션에서 나갔습니다.');
+        } catch (error) {
+          console.error(error);
+        }
+        elements._refreshSessions?.();
       }
     });
 
