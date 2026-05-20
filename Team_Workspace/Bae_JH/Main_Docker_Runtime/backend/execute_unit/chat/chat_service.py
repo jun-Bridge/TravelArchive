@@ -410,7 +410,12 @@ class ChatService:
                         "session_id": session_id,
                         "title": container.session_name,
                     }, ensure_ascii=False))
-                    from ...memory.events import SessionTopicChangedEvent
+                    from ...memory.events import SessionTopicChangedEvent, UpdateSessionRecordEvent
+                    # PG 영속화 — 없으면 재로그인 시 "새 세션"으로 되돌아감
+                    manager.emit(UpdateSessionRecordEvent(
+                        session_id=session_id,
+                        data={"title": container.session_name, "topic": container.session_topic},
+                    ))
                     manager.emit(SessionTopicChangedEvent(
                         user_id=triggering_user_id,
                         session_id=session_id,

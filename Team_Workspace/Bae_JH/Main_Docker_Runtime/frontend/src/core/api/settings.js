@@ -72,12 +72,3 @@ export async function fetchHelpData() {
   }
 }
 
-export async function fetchCurrentWeather() {
-  try {
-    const res = await fetch('/api/weather');
-    if (!res.ok) throw new Error();
-    return await res.json();
-  } catch {
-    return { condition: 'clear', params: {} };
-  }
-}

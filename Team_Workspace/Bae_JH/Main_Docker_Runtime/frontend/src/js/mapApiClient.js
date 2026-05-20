@@ -114,61 +114,7 @@ export async function getMarkers() {
 }
 
 /**
- * 마커 정보 조회 API
- * @param {string} markerId - 마커 ID
- * @returns {Promise<object>} 마커 정보
- */
-export async function getMarker(markerId) {
-  try {
-    const sid = getSessionId();
-    if (!sid) throw new Error('Session ID not found');
-
-    const response = await fetch(
-      `${API_BASE}/${encodeURIComponent(sid)}/map/markers/${encodeURIComponent(markerId)}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    return await response.json();
-  } catch (error) {
-    return handleError(error, 'getMarker');
-  }
-}
-
-/**
- * 마커 정보 업데이트 API
- * @param {string} markerId - 마커 ID
- * @param {object} data - 업데이트할 데이터
- * @returns {Promise<object>} API 응답
- */
-export async function updateMarker(markerId, data) {
-  try {
-    const sid = getSessionId();
-    if (!sid) throw new Error('Session ID not found');
-
-    const response = await fetch(
-      `${API_BASE}/${encodeURIComponent(sid)}/map/markers/${encodeURIComponent(markerId)}`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    return await response.json();
-  } catch (error) {
-    return handleError(error, 'updateMarker');
-  }
-}
-
-/**
- * 모든 마커 삭제 API
+ * 모든 마커 삭제 API (마커 목록을 빈 배열로 덮어씀)
  * @returns {Promise<object>} API 응답
  */
 export async function deleteAllMarkers() {
@@ -176,10 +122,11 @@ export async function deleteAllMarkers() {
     const sid = getSessionId();
     if (!sid) throw new Error('Session ID not found');
 
-    const response = await fetch(
-      `${API_BASE}/${encodeURIComponent(sid)}/map/markers/all`,
-      { method: 'DELETE' }
-    );
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(sid)}/map/markers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ markers: [] }),
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);

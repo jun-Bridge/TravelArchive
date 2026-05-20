@@ -29,7 +29,7 @@ export async function sendTeamMessage(sessionId, message, onBotChunk, onBotDone)
     const token = TokenManager.getAccessToken();
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const response = await fetch(`/api/sessions/${sessionId}/team-message`, {
+    const response = await fetch(`/api/sessions/${sessionId}/message`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ message }),
