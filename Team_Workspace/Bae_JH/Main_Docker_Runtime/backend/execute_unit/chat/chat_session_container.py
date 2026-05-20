@@ -19,7 +19,7 @@ from setting.config import (
     LLM_MODEL_GENERATION, GENERATION_PROMPT, GENERATION_API_KEY,
     LLM_MODEL_ABSORB, ABSORB_PROMPT, ABSORB_API_KEY,
 )
-from ...kernel.gpt_node import GptNode
+from ...kernel.llm import LLM
 
 
 class SessionContainer:
@@ -29,8 +29,8 @@ class SessionContainer:
         self.user_id     = user_id
         self.max_buffer_size = max_buffer_size
 
-        self._gen_node    = GptNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)
-        self._absorb_node = GptNode(model_name=LLM_MODEL_ABSORB,     api_key=ABSORB_API_KEY)
+        self._gen_node    = LLM(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY)
+        self._absorb_node = LLM(model_name=LLM_MODEL_ABSORB,     api_key=ABSORB_API_KEY)
 
         self.personalization_topic: str  = ""
         self.session_topic: str          = "새로운 대화"

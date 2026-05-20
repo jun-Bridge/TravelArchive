@@ -9,13 +9,13 @@ user_analyze.py  [domain / user 카테고리]
   cold start 없음: 의미 있는 데이터가 없으면 실행하지 않는다.
   데이터가 쌓일수록 요약이 정교해지는 구조.
 
-  호출 방향: EventHandler(background task) → UserAnalyze → Cacher(Redis) + GptNode(LLM)
+  호출 방향: EventHandler(background task) → UserAnalyze → Cacher(Redis) + LLM(LLM)
 """
 import asyncio
 from typing import Any, Optional
 
 from setting.config import LLM_MODEL_PERSONAL, PERSONAL_API_KEY, PERSONAL_PROMPT
-from ...kernel.gpt_node import GptNode
+from ...kernel.llm import LLM
 from ...memory.cacher import Cacher
 from ...memory.events import LoadUserSessionTopicsEvent
 
@@ -138,7 +138,7 @@ class UserAnalyze:
             travel_settings=travel if travel else "없음",
         )
 
-        node = GptNode(model_name=LLM_MODEL_PERSONAL, api_key=PERSONAL_API_KEY)
+        node = LLM(model_name=LLM_MODEL_PERSONAL, api_key=PERSONAL_API_KEY)
         result = await node.ask(prompt)
 
         if not result or result.startswith("ERROR:"):

@@ -58,7 +58,7 @@ class Port3:
 
     async def _call_llm(self, qust: QUST) -> PC3:
         from setting.config import LLM_MODEL_GENERATION, GENERATION_API_KEY, ROUTER_PROMPT
-        from ..kernel.gpt_node import GptNode
+        from ..kernel.llm import LLM
 
         past = json.loads(qust.SSN_PCL) if qust.SSN_PCL else []
         history = "\n".join(
@@ -73,7 +73,7 @@ class Port3:
             cc=qust.CC,
         )
 
-        raw = await GptNode(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY).ask(prompt)
+        raw = await LLM(model_name=LLM_MODEL_GENERATION, api_key=GENERATION_API_KEY).ask(prompt)
 
         stripped = raw.strip()
         if stripped.startswith("```"):

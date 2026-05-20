@@ -17,7 +17,7 @@ def _get_client(api_key: str) -> AsyncOpenAI:
     return _client_cache[api_key]
 
 
-class GptNode:
+class LLM:
     def __init__(self, model_name: str = "gpt-4o-mini", api_key: str | None = None) -> None:
         self.model_name: str = model_name
         self._api_key: str = api_key or os.getenv("OPENAI_API_KEY") or ""

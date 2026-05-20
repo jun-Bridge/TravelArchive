@@ -1,3 +1,3 @@
-from ..kernel.gpt_node import GptNode
+from ..kernel.llm import LLM
 
-TestNode = GptNode  # 하위 호환
+TestNode = LLM
